@@ -126,10 +126,10 @@ export default function SimulatorPanel({ token }: SimulatorPanelProps) {
         {result && (
           <div className="space-y-3 pt-2">
             <div className="grid grid-cols-2 gap-2">
-              <MetricCard label="Detecciones esperadas" value={result.expected_detections} color={C.green} />
-              <MetricCard label="Interdicciones" value={result.expected_interdictions} color={C.yellow} />
-              <MetricCard label="Costo por detección" value={`$${result.cost_per_detection.toLocaleString()}`} color={C.text2} />
-              <MetricCard label="Cobertura" value={`${(result.coverage_pct * 100).toFixed(1)}%`} color={C.accent} />
+              <MetricCard label="Detecciones esperadas" value={result.expected_detections ?? 0} color={C.green} />
+              <MetricCard label="Interdicciones" value={result.expected_interdictions ?? 0} color={C.yellow} />
+              <MetricCard label="Costo por detección" value={`$${(result.cost_per_detection ?? 0).toLocaleString()}`} color={C.text2} />
+              <MetricCard label="Cobertura" value={`${((result.coverage_pct ?? 0) * 100).toFixed(1)}%`} color={C.accent} />
             </div>
 
             <div
@@ -137,7 +137,7 @@ export default function SimulatorPanel({ token }: SimulatorPanelProps) {
               style={{ backgroundColor: C.green + "11", border: `1px solid ${C.green}33` }}
             >
               <p className="text-xs font-medium" style={{ color: C.green }}>
-                Reducción de riesgo: {(result.risk_reduction * 100).toFixed(1)}%
+                Reducción de riesgo: {((result.risk_reduction ?? 0) * 100).toFixed(1)}%
               </p>
             </div>
 
@@ -153,9 +153,9 @@ export default function SimulatorPanel({ token }: SimulatorPanelProps) {
                     className="flex items-center justify-between px-2 py-1 rounded mb-1 text-xs"
                     style={{ backgroundColor: C.bgBase }}
                   >
-                    <span>Inspector {route.inspector_id}</span>
+                    <span>Inspector {route?.inspector_id ?? i + 1}</span>
                     <span style={{ color: C.text2 }}>
-                      {route.cells.length} celdas · {route.distance_km.toFixed(0)} km
+                      {route?.cells?.length ?? 0} celdas · {(route?.distance_km ?? 0).toFixed(0)} km
                     </span>
                   </div>
                 ))}

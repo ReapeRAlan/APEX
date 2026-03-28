@@ -902,6 +902,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                 year_result["baseline_year"] = t1_year
 
                 if "deforestation" in engines and t1_year in rasters_dw and year in rasters_dw:
+                    update_job_status(job_id, "running", pct, f"{year} — Detectando deforestación...")
                     try:
                         geo_def, stats_def = dw_engine.detect_deforestation(
                             rasters_dw[t1_year], rasters_dw[year]
@@ -912,6 +913,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                         job_log(job_id, f"[{jid}] {year} ⚠ Deforest error: {e}")
 
                 if "urban_expansion" in engines and t1_year in rasters_dw and year in rasters_dw:
+                    update_job_status(job_id, "running", pct, f"{year} — Detectando expansión urbana...")
                     try:
                         geo_ue, stats_ue = dw_engine.detect_urban_expansion(
                             rasters_dw[t1_year], rasters_dw[year]
@@ -923,6 +925,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── Vegetation classification for this year ──
             if needs_dw and year in rasters_dw:
+                update_job_status(job_id, "running", pct, f"{year} — Clasificando vegetación...")
                 try:
                     geo_veg, stats_veg = dw_engine.classify_from_raster(rasters_dw[year])
                     year_result["vegetation"] = {"geojson": geo_veg, "stats": stats_veg}
@@ -931,6 +934,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── Hansen (filter pre-computed features by year) ──
             if "hansen" in engines and year in hansen_features_by_year:
+                update_job_status(job_id, "running", pct, f"{year} — Procesando Hansen GFC...")
                 yr_feats = hansen_features_by_year[year]
                 yr_ha = sum(f.get("properties", {}).get("area_ha", 0) for f in yr_feats)
                 year_result["hansen"] = {
@@ -948,6 +952,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── Alerts GLAD/RADD (per year) ──
             if "alerts" in engines:
+                update_job_status(job_id, "running", pct, f"{year} — Descargando alertas GLAD/RADD...")
                 try:
                     alerts_svc = GEEAlertsService()
                     alerts_svc.initialize()
@@ -983,6 +988,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── MODIS Fire / Burned Area (full year — fires happen year-round) ──
             if "fire" in engines:
+                update_job_status(job_id, "running", pct, f"{year} — Analizando incendios MODIS...")
                 try:
                     fire_svc = GEEAlertsService()
                     fire_svc.initialize()
@@ -1003,6 +1009,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── SAR Sentinel-1 Change Detection (per year) ──
             if "sar" in engines and i > 0:
+                update_job_status(job_id, "running", pct, f"{year} — Procesando SAR Sentinel-1...")
                 try:
                     sar_svc = GEESARService()
                     sar_svc.initialize()
@@ -1030,6 +1037,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
             # ── NASA FIRMS Hotspots (full year — fire detections year-round) ──
             if "firms_hotspots" in engines:
+                update_job_status(job_id, "running", pct, f"{year} — Consultando FIRMS hotspots...")
                 try:
                     firms_year_start = f"{year}-01-01"
                     firms_year_end = f"{year}-12-31"

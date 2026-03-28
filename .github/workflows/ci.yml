@@ -13,7 +13,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  NODE_VERSION: "22"
+  NODE_VERSION: "24"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Python Backend Tests + Lint ──
@@ -78,7 +79,7 @@ jobs:
         run: mypy backend/ --ignore-missing-imports --no-error-summary || true
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short -x
+        run: pytest backend/tests/ -v --tb=short -x
 
   # ── Frontend Build Check ──
   frontend:
