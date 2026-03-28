@@ -655,7 +655,7 @@ class AlertService:
                 names_str = ", ".join(anp_names[:3]) if anp_names else "Si"
                 extra = f"<div style='font-size:11px;color:#dc2626;font-weight:600;margin-top:6px;'>Intersecta ANP: {names_str}</div>"
             else:
-                extra = f"<div style='font-size:11px;color:#2ea043;margin-top:6px;'>No intersecta Areas Naturales Protegidas</div>"
+                extra = "<div style='font-size:11px;color:#2ea043;margin-top:6px;'>No intersecta Areas Naturales Protegidas</div>"
         elif engine_name == "crossval":
             agreement = stats.get("agreement_pct", 0)
             extra = f"<div style='font-size:11px;color:#6b7280;margin-top:6px;'>Acuerdo DW vs MapBiomas: {agreement}%</div>"
@@ -865,7 +865,7 @@ class AlertService:
     ) -> Optional[str]:
         try:
             from reportlab.lib import colors
-            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+            from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
             from reportlab.lib.pagesizes import letter
             from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.lib.units import cm
@@ -932,7 +932,7 @@ class AlertService:
                 fontSize=10, textColor=colors.HexColor("#374151"),
                 alignment=TA_JUSTIFY, spaceAfter=6,
             )
-            small_style = ParagraphStyle(
+            _small_style = ParagraphStyle(  # noqa: F841
                 "APEXSmall", parent=styles["Normal"],
                 fontSize=8, textColor=colors.HexColor("#6b7280"), spaceAfter=4,
             )

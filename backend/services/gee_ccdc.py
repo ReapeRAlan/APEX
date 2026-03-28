@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 
-import numpy as np
 import rasterio
 from rasterio.merge import merge as rio_merge
 

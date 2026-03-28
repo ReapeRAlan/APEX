@@ -155,8 +155,8 @@ class RetrainingPipeline:
         the actual PyTorch training loop. For heuristic engines like
         NDFI or Hansen we only recalibrate thresholds.
         """
-        mlflow = self._get_mlflow()
-        n = len(train_data)
+        _mlflow = self._get_mlflow()  # noqa: F841
+        _n = len(train_data)  # noqa: F841
 
         if engine_name in ("prithvi", "deforestation", "vegetation"):
             return await self._finetune_deep_model(engine_name, train_data)
@@ -166,8 +166,8 @@ class RetrainingPipeline:
     async def _finetune_deep_model(self, engine_name: str, data: list) -> dict:
         """Fine-tune a PyTorch model on validated labels."""
         try:
-            import torch
-            from torch.utils.data import DataLoader, TensorDataset
+            import torch  # noqa: F401
+            from torch.utils.data import DataLoader, TensorDataset  # noqa: F401
         except ImportError:
             logger.warning("torch not available for fine-tuning")
             return {"f1_score": 0, "precision": 0, "recall": 0, "loss": 999}

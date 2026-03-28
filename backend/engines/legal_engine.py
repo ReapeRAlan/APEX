@@ -7,7 +7,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
-from shapely.geometry import shape, mapping
+from shapely.geometry import shape
 
 
 def _area_deg2_to_ha(area_deg2: float) -> float:

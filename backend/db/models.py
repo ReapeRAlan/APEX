@@ -5,9 +5,6 @@ Replaces the raw sqlite3 schema from database.py.
 All geospatial columns use GeoAlchemy2 for PostGIS integration.
 """
 
-from datetime import datetime
-from typing import Optional
-
 from sqlalchemy import (
     Boolean,
     Column,
@@ -42,6 +39,7 @@ class Job(Base):
     notify_email = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
 
     results = relationship("AnalysisResult", back_populates="job", cascade="all, delete-orphan")
 
@@ -55,6 +53,8 @@ class AnalysisResult(Base):
     geojson = Column(Text, nullable=True)
     stats_json = Column(Text, nullable=True)
     tile_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    validated = Column(Boolean, nullable=True, default=None)
 
     job = relationship("Job", back_populates="results")
 

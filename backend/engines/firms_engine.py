@@ -7,7 +7,6 @@ clustering of nearby detections into fire-event polygons.
 """
 
 import numpy as np
-from datetime import datetime
 from shapely.geometry import Point, MultiPoint, mapping
 from shapely.ops import unary_union
 

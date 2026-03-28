@@ -3,7 +3,6 @@ APEX Beliefs Router — Bayesian fusion API endpoints.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel

@@ -29,7 +29,7 @@ except ImportError:
         "Install it with:  pip install apscheduler"
     )
 
-from .alert_service import AlertService
+from .alert_service import AlertService  # noqa: E402
 
 
 class MonitoringService:

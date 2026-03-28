@@ -1,6 +1,3 @@
-import numpy as np
-import json
-import uuid
 
 class Postprocessor:
     def process_deforestation(self, mask_array, coords, original_shape, aoi_geojson):

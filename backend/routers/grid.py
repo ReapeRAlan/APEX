@@ -6,7 +6,6 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Query
-from sqlalchemy.orm import Session
 
 from ..db.session import SessionLocal
 from ..db.models import GridCell
@@ -66,7 +65,7 @@ async def get_grid_stats():
     """Return summary statistics for the H3 grid."""
     with SessionLocal() as session:
         total = session.query(GridCell).count()
-        in_anp = session.query(GridCell).filter(GridCell.en_anp == True).count()
+        in_anp = session.query(GridCell).filter(GridCell.en_anp.is_(True)).count()
 
         # Count by state
         from sqlalchemy import func

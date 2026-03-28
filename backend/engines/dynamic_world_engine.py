@@ -175,7 +175,7 @@ class DynamicWorldEngine:
             n2 = src2.count
             prob_t2 = None
             if n2 >= 10:
-                prob_t2 = np.stack([src2.read(i) for i in range(2, 11)], axis=0)
+                prob_t2 = np.stack([src2.read(i) for i in range(2, 11)], axis=0)  # noqa: F841
 
         # Validez
         valid = np.isfinite(label_t1) & np.isfinite(label_t2)
@@ -417,7 +417,7 @@ class DynamicWorldEngine:
             # Determinar tipo de expansion
             # Verificar que proporcion del poligono era natural vs suelo en T1
             n_from_bare = int(np.sum(t1_raw[pmask] == CODE_SUELO))
-            n_from_natural = int(np.sum(np.isin(t1_raw[pmask], NATURAL_T1)))
+            n_from_natural = int(np.sum(np.isin(t1_raw[pmask], NATURAL_T1)))  # noqa: F841
             n_now_built = int(np.sum(t2[pmask] == CODE_URBANO))
             total_px = max(int(np.sum(pmask)), 1)
 

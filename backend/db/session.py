@@ -47,9 +47,31 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, then apply migrations."""
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created/verified.")
+
+    # ── Idempotent column migrations for existing databases ──
+    if DATABASE_URL.startswith("sqlite"):
+        _migrate_sqlite()
+
+
+def _migrate_sqlite():
+    """Add columns that may be missing from older SQLite schemas."""
+    migrations = [
+        ("analysis_results", "created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ("analysis_results", "validated", "BOOLEAN DEFAULT NULL"),
+        ("jobs", "updated_at", "DATETIME DEFAULT NULL"),
+    ]
+    with engine.connect() as conn:
+        for table, column, col_type in migrations:
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                conn.commit()
+                logger.info("Migration: added %s.%s", table, column)
+            except Exception:
+                # Column already exists — ignore
+                conn.rollback()
 
 
 @contextmanager

@@ -24,7 +24,7 @@ try:
     import rasterio
     from rasterio.features import shapes as rio_shapes
     from rasterio.windows import Window
-    from rasterio.transform import array_bounds
+    from rasterio.transform import array_bounds  # noqa: F401
 except ImportError:
     rasterio = None  # type: ignore[assignment]
 

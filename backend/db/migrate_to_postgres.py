@@ -8,7 +8,6 @@ Reads SQLITE_PATH (default: ./db/apex.sqlite) and DATABASE_URL (must be set).
 Copies all rows from the 5 legacy tables into the new PostgreSQL schema.
 """
 
-import json
 import os
 import sqlite3
 import sys

@@ -17,7 +17,7 @@ import csv
 import io
 import logging
 import time
-from datetime import datetime, timedelta, date as dt_date
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests

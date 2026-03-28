@@ -16,9 +16,8 @@ Genera reportes completos con:
 """
 
 import io
-import os
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 import matplotlib
 matplotlib.use("Agg")
@@ -30,11 +29,10 @@ import numpy as np
 
 # ── reportlab ──
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import cm, inch
-from reportlab.lib.utils import ImageReader
+from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image as RLImage,
     PageBreak,
@@ -43,14 +41,13 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
-    KeepTogether,
 )
 
 # ── python-docx ──
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.shared import Cm, Inches, Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor
 
 # ═══════════════════════════════════════════════════════════
 #  Shared constants
@@ -293,7 +290,6 @@ def _build_location_map(aoi_geojson: dict, coords: dict,
     _add_coord_grid(ax)
 
     # Legend
-    import matplotlib.patheffects as pe
     legend_items = [
         mpatches.Patch(facecolor="#00d4ff", alpha=0.3, edgecolor="#00d4ff",
                        linewidth=2, label=f"Área analizada: {area_ha:.2f} ha"),
@@ -496,9 +492,9 @@ def _build_year_map(year_data: dict, year: str,
         # Filter duplicate labels
         handles, labels = ax.get_legend_handles_labels()
         unique = {}
-        for h, l in zip(handles, labels):
-            if l not in unique and not l.startswith("_"):
-                unique[l] = h
+        for h, lbl in zip(handles, labels):
+            if lbl not in unique and not lbl.startswith("_"):
+                unique[lbl] = h
         if unique:
             ax.legend(handles=list(unique.values()), labels=list(unique.keys()),
                       fontsize=7, loc="lower right", framealpha=0.9)

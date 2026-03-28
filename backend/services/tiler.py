@@ -1,5 +1,4 @@
 import numpy as np
-from pathlib import Path
 
 class Tiler:
     def __init__(self, patch_size=256, overlap=32):

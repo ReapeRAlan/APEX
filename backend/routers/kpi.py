@@ -3,12 +3,20 @@ APEX Phase 4 — KPI Dashboard Router.
 
 Endpoints for operational impact metrics, model performance,
 and retraining status. Powers the ImpactDashboard frontend.
+
+All queries use the SQLAlchemy ORM to remain dialect-agnostic
+(works on both SQLite and PostgreSQL).
 """
 
 from fastapi import APIRouter, Query
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import logging
+
+from sqlalchemy import func, case
+
+from ..db.session import get_session
+from ..db.models import Job, AnalysisResult, MonitoringAlert, GridCell, BeliefState
 
 logger = logging.getLogger("apex.kpi")
 router = APIRouter(tags=["kpi"])
@@ -20,55 +28,50 @@ async def kpi_summary(
     subdelegacion: Optional[str] = None,
 ):
     """Overall KPI summary for the dashboard."""
-    from ..db.session import get_session
-    from sqlalchemy import text
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    filters = "WHERE j.created_at >= :cutoff"
-    params: dict = {"cutoff": cutoff.isoformat()}
 
-    if subdelegacion:
-        filters += " AND j.parameters::text LIKE :subdel"
-        params["subdel"] = f"%{subdelegacion}%"
+    try:
+        with get_session() as session:
+            # Total / completed jobs
+            q = session.query(
+                func.count(Job.id),
+                func.sum(case((Job.status == "completed", 1), else_=0)),
+            ).filter(Job.created_at >= cutoff)
+            if subdelegacion:
+                q = q.filter(Job.engines.like(f"%{subdelegacion}%"))
+            r = q.one()
+            total_jobs = r[0] or 0
+            completed_jobs = r[1] or 0
 
-    with get_session() as session:
-        # Total jobs
-        r = session.execute(
-            text(f"SELECT COUNT(*), SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) FROM jobs j {filters}"),
-            params,
-        ).fetchone()
-        total_jobs = r[0] or 0
-        completed_jobs = r[1] or 0
+            # Alerts generated
+            total_alerts = (
+                session.query(func.count(MonitoringAlert.id))
+                .filter(MonitoringAlert.detected_at >= cutoff)
+                .scalar()
+            ) or 0
 
-        # Alerts generated
-        r2 = session.execute(
-            text(f"SELECT COUNT(*) FROM monitoring_alerts WHERE created_at >= :cutoff"),
-            {"cutoff": cutoff.isoformat()},
-        ).fetchone()
-        total_alerts = r2[0] or 0
+            # Detections
+            det = session.query(
+                func.count(AnalysisResult.id),
+                func.sum(case((AnalysisResult.validated == True, 1), else_=0)),  # noqa: E712
+            ).filter(AnalysisResult.created_at >= cutoff).one()
+            total_detections = det[0] or 0
+            validated_detections = det[1] or 0
 
-        # Validated detections
-        r3 = session.execute(
-            text(
-                "SELECT COUNT(*), "
-                "SUM(CASE WHEN validated=true THEN 1 ELSE 0 END) "
-                "FROM analysis_results WHERE created_at >= :cutoff"
-            ),
-            {"cutoff": cutoff.isoformat()},
-        ).fetchone()
-        total_detections = r3[0] or 0
-        validated_detections = r3[1] or 0
-
-        # Average response time (jobs)
-        r4 = session.execute(
-            text(
-                "SELECT AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) "
-                "FROM jobs j "
-                f"{filters} AND j.status = 'completed'"
-            ),
-            params,
-        ).fetchone()
-        avg_response_secs = r4[0] or 0
+            # Avg response (completed_at - created_at) in seconds
+            avg_response_secs = 0
+            completed_pairs = (
+                session.query(Job.created_at, Job.completed_at)
+                .filter(Job.created_at >= cutoff, Job.status == "completed", Job.completed_at.isnot(None))
+                .all()
+            )
+            if completed_pairs:
+                deltas = [(c.completed_at - c.created_at).total_seconds() for c in completed_pairs if c.created_at and c.completed_at]
+                avg_response_secs = sum(deltas) / len(deltas) if deltas else 0
+    except Exception as exc:
+        logger.error("kpi_summary error: %s", exc)
+        total_jobs = completed_jobs = total_alerts = total_detections = validated_detections = 0
+        avg_response_secs = 0
 
     return {
         "period_days": days,
@@ -86,33 +89,34 @@ async def kpi_summary(
 @router.get("/kpi/engines")
 async def kpi_engines(days: int = Query(30, ge=1, le=365)):
     """Per-engine performance metrics."""
-    from ..db.session import get_session
-    from sqlalchemy import text
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-    with get_session() as session:
-        rows = session.execute(
-            text(
-                "SELECT engine, "
-                "COUNT(*) as total, "
-                "SUM(CASE WHEN validated=true THEN 1 ELSE 0 END) as validated, "
-                "SUM(CASE WHEN validated=false THEN 1 ELSE 0 END) as rejected "
-                "FROM analysis_results "
-                "WHERE created_at >= :cutoff "
-                "GROUP BY engine ORDER BY total DESC"
-            ),
-            {"cutoff": cutoff.isoformat()},
-        ).fetchall()
+    try:
+        with get_session() as session:
+            rows = (
+                session.query(
+                    AnalysisResult.engine,
+                    func.count(AnalysisResult.id).label("total"),
+                    func.sum(case((AnalysisResult.validated == True, 1), else_=0)).label("validated"),  # noqa: E712
+                    func.sum(case((AnalysisResult.validated == False, 1), else_=0)).label("rejected"),  # noqa: E712
+                )
+                .filter(AnalysisResult.created_at >= cutoff)
+                .group_by(AnalysisResult.engine)
+                .order_by(func.count(AnalysisResult.id).desc())
+                .all()
+            )
+    except Exception as exc:
+        logger.error("kpi_engines error: %s", exc)
+        rows = []
 
     engines = []
     for r in rows:
-        total = r[1]
-        validated = r[2] or 0
-        rejected = r[3] or 0
+        total = r.total or 0
+        validated = r.validated or 0
+        rejected = r.rejected or 0
         reviewed = validated + rejected
         engines.append({
-            "engine": r[0],
+            "engine": r.engine,
             "total_detections": total,
             "validated": validated,
             "rejected": rejected,
@@ -129,37 +133,40 @@ async def kpi_timeline(
     granularity: str = Query("day", pattern="^(day|week|month)$"),
 ):
     """Time series of detections and alerts."""
-    from ..db.session import get_session
-    from sqlalchemy import text
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-    trunc_fn = {
-        "day": "DATE(created_at)",
-        "week": "DATE(date_trunc('week', created_at))",
-        "month": "DATE(date_trunc('month', created_at))",
-    }[granularity]
+    try:
+        with get_session() as session:
+            # Use func.date for grouping — works on both SQLite and PostgreSQL
+            if granularity == "day":
+                det_group = func.date(AnalysisResult.created_at)
+                alert_group = func.date(MonitoringAlert.detected_at)
+            elif granularity == "week":
+                det_group = func.strftime("%Y-W%W", AnalysisResult.created_at)
+                alert_group = func.strftime("%Y-W%W", MonitoringAlert.detected_at)
+            else:  # month
+                det_group = func.strftime("%Y-%m", AnalysisResult.created_at)
+                alert_group = func.strftime("%Y-%m", MonitoringAlert.detected_at)
 
-    with get_session() as session:
-        # Detections over time
-        det_rows = session.execute(
-            text(
-                f"SELECT {trunc_fn} as period, COUNT(*) "
-                "FROM analysis_results WHERE created_at >= :cutoff "
-                f"GROUP BY period ORDER BY period"
-            ),
-            {"cutoff": cutoff.isoformat()},
-        ).fetchall()
+            det_rows = (
+                session.query(det_group.label("period"), func.count(AnalysisResult.id))
+                .filter(AnalysisResult.created_at >= cutoff)
+                .group_by("period")
+                .order_by("period")
+                .all()
+            )
 
-        # Alerts over time
-        alert_rows = session.execute(
-            text(
-                f"SELECT {trunc_fn} as period, COUNT(*) "
-                "FROM monitoring_alerts WHERE created_at >= :cutoff "
-                f"GROUP BY period ORDER BY period"
-            ),
-            {"cutoff": cutoff.isoformat()},
-        ).fetchall()
+            alert_rows = (
+                session.query(alert_group.label("period"), func.count(MonitoringAlert.id))
+                .filter(MonitoringAlert.detected_at >= cutoff)
+                .group_by("period")
+                .order_by("period")
+                .all()
+            )
+    except Exception as exc:
+        logger.error("kpi_timeline error: %s", exc)
+        det_rows = []
+        alert_rows = []
 
     det_map = {str(r[0]): r[1] for r in det_rows}
     alert_map = {str(r[0]): r[1] for r in alert_rows}
@@ -180,22 +187,30 @@ async def kpi_timeline(
 @router.get("/kpi/retraining")
 async def kpi_retraining():
     """MLflow retraining pipeline status for all engines."""
-    from ..services.mlflow_pipeline import RetrainingPipeline
+    experiments = []
+    pipeline = None
+    label_threshold = 50
 
-    pipeline = RetrainingPipeline()
-    experiments = await pipeline.get_experiment_status()
+    try:
+        from ..services.mlflow_pipeline import RetrainingPipeline
+        pipeline = RetrainingPipeline()
+        label_threshold = pipeline.LABEL_THRESHOLD
+        experiments = await pipeline.get_experiment_status()
+    except Exception as exc:
+        logger.warning("MLflow not available: %s", exc)
 
-    # Label counts per engine
-    from ..db.session import get_session
-    from sqlalchemy import text
-    with get_session() as session:
-        label_rows = session.execute(
-            text(
-                "SELECT engine, COUNT(*) "
-                "FROM analysis_results WHERE validated = true "
-                "GROUP BY engine"
+    # Label counts per engine (ORM)
+    try:
+        with get_session() as session:
+            label_rows = (
+                session.query(AnalysisResult.engine, func.count(AnalysisResult.id))
+                .filter(AnalysisResult.validated == True)  # noqa: E712
+                .group_by(AnalysisResult.engine)
+                .all()
             )
-        ).fetchall()
+    except Exception as exc:
+        logger.error("kpi_retraining label query error: %s", exc)
+        label_rows = []
 
     label_map = {r[0]: r[1] for r in label_rows}
 
@@ -206,11 +221,10 @@ async def kpi_retraining():
         engines_status.append({
             **exp,
             "validated_labels": labels,
-            "ready_to_retrain": labels >= pipeline.LABEL_THRESHOLD,
-            "label_threshold": pipeline.LABEL_THRESHOLD,
+            "ready_to_retrain": labels >= label_threshold,
+            "label_threshold": label_threshold,
         })
 
-    # Add engines with labels but no experiment yet
     for engine, count in label_map.items():
         if not any(e["engine"] == engine for e in engines_status):
             engines_status.append({
@@ -220,8 +234,8 @@ async def kpi_retraining():
                 "best_f1": None,
                 "last_run": None,
                 "validated_labels": count,
-                "ready_to_retrain": count >= pipeline.LABEL_THRESHOLD,
-                "label_threshold": pipeline.LABEL_THRESHOLD,
+                "ready_to_retrain": count >= label_threshold,
+                "label_threshold": label_threshold,
             })
 
     return {"engines": engines_status}
@@ -230,45 +244,32 @@ async def kpi_retraining():
 @router.post("/kpi/retrain/{engine_name}")
 async def trigger_retrain(engine_name: str):
     """Manually trigger retraining for an engine."""
-    from ..services.mlflow_pipeline import RetrainingPipeline
-
-    pipeline = RetrainingPipeline()
-    result = await pipeline.check_and_retrain(engine_name)
-    if result is None:
-        return {"status": "skipped", "reason": "insufficient labels"}
-    return result
+    try:
+        from ..services.mlflow_pipeline import RetrainingPipeline
+        pipeline = RetrainingPipeline()
+        result = await pipeline.check_and_retrain(engine_name)
+        if result is None:
+            return {"status": "skipped", "reason": "insufficient labels"}
+        return result
+    except Exception as exc:
+        logger.error("Retrain trigger failed: %s", exc)
+        return {"status": "error", "reason": str(exc)}
 
 
 @router.get("/kpi/coverage")
 async def kpi_coverage():
     """Grid coverage stats — how much of the national grid has been analyzed."""
-    from ..db.session import get_session
-    from sqlalchemy import text
-
-    with get_session() as session:
-        r = session.execute(
-            text(
-                "SELECT COUNT(*), "
-                "SUM(CASE WHEN priority_score > 0 THEN 1 ELSE 0 END), "
-                "AVG(priority_score) "
-                "FROM grid_cells"
-            )
-        ).fetchone()
-
-        total_cells = r[0] or 0
-        analyzed_cells = r[1] or 0
-        avg_priority = r[2] or 0
-
-        # Belief coverage
-        r2 = session.execute(
-            text("SELECT COUNT(*) FROM belief_states")
-        ).fetchone()
-        belief_cells = r2[0] or 0
+    try:
+        with get_session() as session:
+            total_cells = session.query(func.count(GridCell.id)).scalar() or 0
+            belief_cells = session.query(func.count(BeliefState.id)).scalar() or 0
+    except Exception as exc:
+        logger.error("kpi_coverage error: %s", exc)
+        total_cells = belief_cells = 0
 
     return {
         "total_grid_cells": total_cells,
-        "analyzed_cells": analyzed_cells,
-        "coverage_rate": analyzed_cells / max(total_cells, 1),
-        "avg_priority": round(float(avg_priority), 4),
+        "analyzed_cells": belief_cells,
+        "coverage_rate": belief_cells / max(total_cells, 1),
         "belief_states_active": belief_cells,
     }

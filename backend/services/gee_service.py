@@ -273,7 +273,7 @@ class GEEService:
         if raw_coords:
             lons = [c[0] for c in raw_coords]
             lats = [c[1] for c in raw_coords]
-            print(f"[DW] get_dynamic_world_classification llamado:")
+            print("[DW] get_dynamic_world_classification llamado:")
             print(f"[DW]   job_id={job_id}")
             print(f"[DW]   AOI lon=[{min(lons):.4f},{max(lons):.4f}] lat=[{min(lats):.4f},{max(lats):.4f}]")
             print(f"[DW]   dates={start_date} → {end_date}")
@@ -608,7 +608,7 @@ class GEEService:
                 f"Raster descargado ({raster_path.name}) no cubre el AOI - revisar coordenadas"
             )
 
-        print(f"[verify-bbox] OK - raster cubre el AOI", flush=True)
+        print("[verify-bbox] OK - raster cubre el AOI", flush=True)
         return True
 
     def _inject_argmax_label(self, tif_path: Path):

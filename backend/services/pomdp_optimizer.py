@@ -13,14 +13,11 @@ Also includes:
   - Team Orienteering Problem (TOP) solver for route optimization
 """
 
-import json
 import logging
 import math
 from datetime import datetime
-from typing import Optional
 from dataclasses import dataclass, field
 
-import numpy as np
 
 logger = logging.getLogger("apex.pomdp")
 
@@ -146,8 +143,8 @@ class ForestPOMDP:
 
         VoI = E[damage_avoided | additional_image] - E[damage_avoided | no_image]
         """
-        ci = belief.get("ci", 0.5)
-        p_illicit = 1.0 - belief.get("p_sin_ilicito", 0.85)
+        _ci = belief.get("ci", 0.5)  # noqa: F841
+        _p_illicit = 1.0 - belief.get("p_sin_ilicito", 0.85)  # noqa: F841
 
         # Expected damage avoided without additional info
         _, reward_current = self._best_action(belief)

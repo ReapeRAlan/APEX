@@ -6,12 +6,9 @@ but backed by SQLAlchemy. This allows a gradual migration: old code keeps
 working while new code uses the ORM session directly.
 """
 
-import json
 import logging
-from contextlib import contextmanager
 
-from .session import engine, init_db, SessionLocal
-from .models import Base
+from .session import engine, init_db
 
 logger = logging.getLogger("apex.db")
 
@@ -21,8 +18,11 @@ class _RowProxy:
 
     def __init__(self, mapping):
         self._data = dict(mapping)
+        self._values = list(self._data.values())
 
     def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
         return self._data[key]
 
     def get(self, key, default=None):
@@ -30,6 +30,12 @@ class _RowProxy:
 
     def keys(self):
         return self._data.keys()
+
+    def items(self):
+        return self._data.items()
+
+    def values(self):
+        return self._data.values()
 
 
 class _ConnectionProxy:

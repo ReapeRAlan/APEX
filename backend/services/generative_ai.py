@@ -10,11 +10,9 @@ Guardrails: The LLM NEVER asserts certainty about an illicit —
 only probabilities + recommendations.
 """
 
-import json
 import logging
 import hashlib
 from datetime import datetime
-from typing import Optional
 
 logger = logging.getLogger("apex.genai")
 

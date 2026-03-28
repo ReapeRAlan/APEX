@@ -9,13 +9,10 @@ import ee
 import hashlib
 import json
 import os
-import tempfile
 from pathlib import Path
 
-import numpy as np
 import rasterio
 from rasterio.merge import merge as rio_merge
-from rasterio.transform import from_bounds
 
 from ..config import settings
 

@@ -13,7 +13,6 @@ and stride=patch_size (no overlap), which differs from the Tiler defaults.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import rasterio

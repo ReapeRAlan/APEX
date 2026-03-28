@@ -13,14 +13,12 @@ Motors provide observations that are fused using calibrated confusion matrices.
 
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime
 
 import numpy as np
-from sqlalchemy.orm import Session
 
 from ..db.session import SessionLocal
-from ..db.models import BeliefState, GridCell
+from ..db.models import BeliefState
 
 logger = logging.getLogger("apex.bayesian")
 

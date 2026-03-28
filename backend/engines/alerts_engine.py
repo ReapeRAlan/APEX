@@ -6,15 +6,14 @@ Vectoriza alertas GLAD / RADD, fusiona con deduplicacion espacial.
 import warnings
 warnings.filterwarnings("ignore")
 
-from datetime import date, timedelta
-from pathlib import Path
+from datetime import date, timedelta  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-import numpy as np
-import rasterio
-from rasterio.features import shapes, rasterize
-from scipy.ndimage import binary_opening, binary_closing
-from shapely.geometry import shape, mapping
-from shapely.ops import unary_union
+import numpy as np  # noqa: E402
+import rasterio  # noqa: E402
+from rasterio.features import shapes, rasterize  # noqa: E402
+from scipy.ndimage import binary_opening, binary_closing  # noqa: E402
+from shapely.geometry import shape, mapping  # noqa: E402
 
 MIN_AREA_HA = 0.25   # alerts can be smaller than Hansen loss polygons
 MAX_FEATURES = 300

@@ -2,7 +2,6 @@ import json
 import sys
 import os
 import traceback
-from pathlib import Path
 from datetime import datetime, timedelta
 
 # Fix Windows console encoding for Unicode chars (arrows, emojis in logs)
@@ -20,10 +19,8 @@ import rasterio
 from .db.database import db
 from .services.gee_service import GEEService
 from .services.logger import log
-from .engines.deforestation_engine import DeforestationEngine
 from .engines.dynamic_world_engine import DynamicWorldEngine
 from .engines.structure_engine import StructureEngine
-from .engines.vegetation_engine import VegetationEngine
 from .engines.hansen_engine import HansenEngine
 from .engines.alerts_engine import AlertsEngine
 from .engines.drivers_engine import DriversEngine
@@ -200,7 +197,7 @@ def run_pipeline(job_id: str, req_data: dict):
         all_driver_features: list = []
         all_fire_features: list = []
         all_sar_features: list = []
-        all_firms_features: list = []
+        _all_firms_features: list = []  # noqa: F841
         all_firms_rows: list = []
         total_def_ha = 0.0
         total_ue_ha = 0.0
@@ -677,15 +674,24 @@ def run_pipeline(job_id: str, req_data: dict):
 
         # ── Final summary logging ──
         results_summary = []
-        if all_def_features: results_summary.append(f"deforestacion={len(all_def_features)}feat/{total_def_ha:.1f}ha")
-        if all_veg_features: results_summary.append(f"vegetacion={len(all_veg_features)}feat")
-        if all_ue_features: results_summary.append(f"expansion_urbana={len(all_ue_features)}feat/{total_ue_ha:.1f}ha")
-        if all_hansen_features: results_summary.append(f"hansen={len(all_hansen_features)}feat/{total_hansen_ha:.1f}ha")
-        if all_alert_features: results_summary.append(f"alertas={len(all_alert_features)}")
-        if all_fire_features: results_summary.append(f"incendios={len(all_fire_features)}feat/{total_burned_ha:.1f}ha")
-        if all_sar_features: results_summary.append(f"sar={len(all_sar_features)}feat/{total_sar_ha:.1f}ha")
-        if all_firms_rows: results_summary.append(f"firms_nrt={len(all_firms_rows)}hotspots")
-        if all_driver_features: results_summary.append(f"drivers={len(all_driver_features)}feat")
+        if all_def_features:
+            results_summary.append(f"deforestacion={len(all_def_features)}feat/{total_def_ha:.1f}ha")
+        if all_veg_features:
+            results_summary.append(f"vegetacion={len(all_veg_features)}feat")
+        if all_ue_features:
+            results_summary.append(f"expansion_urbana={len(all_ue_features)}feat/{total_ue_ha:.1f}ha")
+        if all_hansen_features:
+            results_summary.append(f"hansen={len(all_hansen_features)}feat/{total_hansen_ha:.1f}ha")
+        if all_alert_features:
+            results_summary.append(f"alertas={len(all_alert_features)}")
+        if all_fire_features:
+            results_summary.append(f"incendios={len(all_fire_features)}feat/{total_burned_ha:.1f}ha")
+        if all_sar_features:
+            results_summary.append(f"sar={len(all_sar_features)}feat/{total_sar_ha:.1f}ha")
+        if all_firms_rows:
+            results_summary.append(f"firms_nrt={len(all_firms_rows)}hotspots")
+        if all_driver_features:
+            results_summary.append(f"drivers={len(all_driver_features)}feat")
         if results_summary:
             job_log(job_id, f"[{jid}] Resultados: {', '.join(results_summary)}")
 
@@ -808,8 +814,8 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
         # Check which engine categories are needed
         needs_dw = any(e in engines for e in ["deforestation", "urban_expansion", "vegetation"])
-        needs_s2 = "structures" in engines
-        needs_sar = "sar" in engines
+        _needs_s2 = "structures" in engines  # noqa: F841
+        _needs_sar = "sar" in engines  # noqa: F841
 
         years = list(range(start_year, end_year + 1))
         total_steps = len(years)
@@ -837,7 +843,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
         # ── Phase 1b: Hansen (one-time download, data already per-year) ──
         hansen_features_by_year: dict[int, list] = {}
-        hansen_total_loss = 0.0
+        _hansen_total_loss = 0.0  # noqa: F841
         if "hansen" in engines:
             update_job_status(job_id, "running", 30, "Descargando Hansen GFC...")
             try:
@@ -848,7 +854,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                 )
                 hansen_eng = HansenEngine()
                 hansen_geo, hansen_stats = hansen_eng.analyze_historical_loss(hansen_path)
-                hansen_total_loss = hansen_stats.get("total_loss_ha", 0)
+                _hansen_total_loss = hansen_stats.get("total_loss_ha", 0)  # noqa: F841
                 # Group features by loss_year
                 for f in hansen_geo.get("features", []):
                     yr = f.get("properties", {}).get("loss_year", 0)

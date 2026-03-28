@@ -14,12 +14,8 @@ Stores results in PostGIS table `grid_cells`.
 """
 
 import logging
-import os
-import json
-from typing import Optional
 
 import h3
-import numpy as np
 
 logger = logging.getLogger("apex.h3_grid")
 
@@ -52,7 +48,7 @@ def generate_h3_cells(
     )
 
     # Build a polygon covering Mexico
-    polygon = [
+    _polygon = [  # noqa: F841
         (min_lat, min_lng),
         (min_lat, max_lng),
         (max_lat, max_lng),
@@ -186,7 +182,6 @@ def save_cells_to_db(cells: list[dict]):
     from ..db.session import engine, init_db
     from ..db.models import GridCell
     from sqlalchemy.orm import Session
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     init_db()
 

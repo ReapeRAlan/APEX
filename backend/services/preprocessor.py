@@ -1,7 +1,6 @@
 import numpy as np
 import rasterio
 from pathlib import Path
-from ..config import settings
 
 class Preprocessor:
     def process_composite(self, tile_path: Path) -> np.ndarray:

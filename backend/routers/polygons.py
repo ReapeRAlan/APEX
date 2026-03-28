@@ -4,7 +4,6 @@ Accepts GeoJSON, KML, KMZ, GPX, Shapefile (ZIP), WKT and returns
 normalised GeoJSON geometry for use as AOI or reference layer.
 """
 
-import io
 import json
 import logging
 import tempfile

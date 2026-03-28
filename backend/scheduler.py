@@ -61,7 +61,6 @@ def task_news_monitor():
 def task_weekly_reports():
     """Monday 6am: generate weekly reports for active subdelegations."""
     try:
-        from .services.generative_ai import genai_service
         logger.info("Weekly report generation started.")
         # In production, iterate over active subdelegations
         # For now, log completion

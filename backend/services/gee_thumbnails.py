@@ -6,7 +6,6 @@ in the timeline analysis, to embed in PDF/Word reports with real
 satellite imagery (like MACOF does).
 """
 
-import io
 import logging
 import os
 from typing import Dict, Optional
