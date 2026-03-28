@@ -59,6 +59,7 @@ export default function JobStatus({ jobId, onCompleted }: { jobId: string; onCom
       }
     }, 1000)
     return () => clearInterval(interval)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId])
 
   const color = status === "failed" ? "bg-red-500" : status === "completed" ? "bg-green-500" : "bg-blue-500"

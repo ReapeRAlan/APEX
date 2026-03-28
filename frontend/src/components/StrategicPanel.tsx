@@ -46,10 +46,6 @@ export default function StrategicPanel({ token }: StrategicPanelProps) {
     "Content-Type": "application/json",
   }
 
-  useEffect(() => {
-    if (tab === "overview") fetchOverview()
-  }, [tab])
-
   const fetchOverview = async () => {
     setLoading(true)
     try {
@@ -58,6 +54,11 @@ export default function StrategicPanel({ token }: StrategicPanelProps) {
     } catch { /* ignore */ }
     setLoading(false)
   }
+
+  useEffect(() => {
+    if (tab === "overview") fetchOverview()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   const fetchBrief = async (alertId: string) => {
     setLoading(true)

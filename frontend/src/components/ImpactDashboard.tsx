@@ -68,10 +68,6 @@ export default function ImpactDashboard({ token }: ImpactDashboardProps) {
 
   const headers = { Authorization: `Bearer ${token}` }
 
-  useEffect(() => {
-    fetchAll()
-  }, [period])
-
   const fetchAll = async () => {
     setLoading(true)
     try {
@@ -97,6 +93,11 @@ export default function ImpactDashboard({ token }: ImpactDashboardProps) {
     } catch { /* ignore */ }
     setLoading(false)
   }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchAll()
+  }, [period])
 
   return (
     <div className="h-full flex flex-col" style={{ color: C.text1 }}>
@@ -193,7 +194,7 @@ export default function ImpactDashboard({ token }: ImpactDashboardProps) {
                     innerRadius={30}
                     outerRadius={55}
                     dataKey="value"
-                    label={({ name }: { name: string }) => name}
+                    label={({ name }: { name?: string }) => name ?? ""}
                     labelLine={false}
                     fontSize={9}
                   >

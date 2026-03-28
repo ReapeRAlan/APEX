@@ -83,7 +83,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             backgroundColor: C.bgBase,
             border: `1px solid ${C.border}`,
             color: C.text1,
-            // @ts-ignore -- ring color
             "--tw-ring-color": C.accent,
           } as React.CSSProperties}
           placeholder="usuario@profepa.gob.mx"

@@ -50,6 +50,17 @@ interface Cumulative {
   engines_used?: string[]
 }
 
+/* Custom dot: highlight anomaly years — defined outside render to satisfy react-hooks/static-components */
+function CustomDot({ cx, cy, payload, anomalies }: { cx?: number; cy?: number; payload?: any; anomalies?: Anomaly[] }) {
+  const isAnomaly = (anomalies ?? []).some(
+    (a) => a.year === payload?.year && a.engine === "deforestation"
+  )
+  if (isAnomaly) {
+    return <circle cx={cx} cy={cy} r={5} fill="#fbbf24" stroke="#ef4444" strokeWidth={2} />
+  }
+  return <circle cx={cx} cy={cy} r={3} fill="#ef4444" />
+}
+
 export default function TimelinePanel({
   jobId,
   onYearSelect,
@@ -177,17 +188,7 @@ export default function TimelinePanel({
 
   const sel = selectedYear ? yearLayers[selectedYear] : null
 
-  /* Custom dot: highlight anomaly years */
-  const CustomDot = (props: any) => {
-    const { cx, cy, payload } = props
-    const isAnomaly = anomalies.some(
-      (a) => a.year === payload?.year && a.engine === "deforestation"
-    )
-    if (isAnomaly) {
-      return <circle cx={cx} cy={cy} r={5} fill="#fbbf24" stroke="#ef4444" strokeWidth={2} />
-    }
-    return <circle cx={cx} cy={cy} r={3} fill="#ef4444" />
-  }
+
 
   return (
     <div>
@@ -274,7 +275,7 @@ export default function TimelinePanel({
           ))}
           {/* Change lines on top */}
           <Line type="monotone" dataKey="deforestation_ha" stroke="#ef4444" strokeWidth={2}
-            dot={<CustomDot />} yAxisId={1} />
+            dot={<CustomDot anomalies={anomalies} />} yAxisId={1} />
           <Line type="monotone" dataKey="urban_expansion_ha" stroke="#f97316" strokeWidth={2}
             dot={{ r: 3, fill: "#f97316" }} yAxisId={1} />
           <Line type="monotone" dataKey="burned_ha" stroke="#fb923c" strokeWidth={1.5}

@@ -28,6 +28,27 @@ function App() {
   })
   const [rightPanel, setRightPanel] = useState<"none" | "strategic" | "simulator" | "impact">("none")
 
+  // ── Lifted state (must be declared before any early return) ──
+  const [aoi, setAoi] = useState<object | null>(null)
+  const [engines, setEngines] = useState<string[]>(["deforestation", "vegetation", "structures", "urban_expansion"])
+  const [basemap, setBasemap] = useState("Oscuro (Carto)")
+  const [layerVis, setLayerVis] = useState<Record<string, boolean>>({
+    def: true, str: true, veg: true, ue: true,
+    hansen: true, alerts: true, drivers: true, fire: true, anp: true, sar: true,
+  })
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [timelineJobId, setTimelineJobId] = useState<string | null>(null)
+  const [results, setResults] = useState<any>(null)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analysisStatus, setAnalysisStatus] = useState<"idle" | "running" | "completed" | "failed">("idle")
+  const [showValidation, setShowValidation] = useState(false)
+  const [selectedTimelineYear, setSelectedTimelineYear] = useState<number | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [drawMode, setDrawMode] = useState<DrawMode>("static")
+  const [notifyEmail, setNotifyEmail] = useState("")
+  const [uploadedPolygons, setUploadedPolygons] = useState<UploadedPolygon[]>([])
+  const drawCounter = useRef(0)
+
   const handleLogin = (t: string, u: { email: string; role: string; full_name: string }) => {
     setToken(t)
     setUser(u)
@@ -38,30 +59,6 @@ function App() {
     setToken(null)
     setUser(null)
   }
-
-  // If no token, show login
-  if (!token) return <LoginPage onLogin={handleLogin} />
-
-  // ── Lifted state ──
-  const [aoi, setAoi] = useState<object | null>(null)
-  const [engines, setEngines] = useState<string[]>(["deforestation", "vegetation", "structures", "urban_expansion"])
-  const [basemap, setBasemap] = useState("Oscuro (Carto)")
-  const [layerVis, setLayerVis] = useState<Record<string, boolean>>({
-    def: true, str: true, veg: true, ue: true,
-    hansen: true, alerts: true, drivers: true, fire: true, anp: true, sar: true,
-  })
-  const [jobId, setJobId] = useState<string | null>(null)
-  const [timelineJobId, setTimelineJobId] = useState<string | null>(null)
-  const [results, setResults] = useState<any | null>(null)
-  const [isAnalyzing, setIsAnalyzing] = useState(false)
-  const [analysisStatus, setAnalysisStatus] = useState<"idle" | "running" | "completed" | "failed">("idle")
-  const [showValidation, setShowValidation] = useState(false)
-  const [selectedTimelineYear, setSelectedTimelineYear] = useState<number | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
-  const [drawMode, setDrawMode] = useState<DrawMode>("static")
-  const [notifyEmail, setNotifyEmail] = useState("")
-  const [uploadedPolygons, setUploadedPolygons] = useState<UploadedPolygon[]>([])
-  let drawCounter = useRef(0)
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -279,9 +276,9 @@ function App() {
   }, [])
 
   // ── Use uploaded polygon as AOI ──
-  const handleUsePolygonAsAoi = useCallback((geometry: any) => {
+  const handleUsePolygonAsAoi = useCallback((geometry: unknown) => {
     mapRef.current?.setAoiFromGeometry(geometry)
-    setAoi(geometry)
+    setAoi(geometry as object)
     setDrawMode("static")
     showToast("Poligono cargado como AOI")
   }, [])
@@ -290,6 +287,9 @@ function App() {
   const handleFlyToBbox = useCallback((bbox: number[]) => {
     mapRef.current?.flyToBbox(bbox)
   }, [])
+
+  // If no token, show login
+  if (!token) return <LoginPage onLogin={handleLogin} />
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ backgroundColor: C.bgBase }}>

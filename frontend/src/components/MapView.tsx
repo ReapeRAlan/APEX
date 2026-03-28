@@ -396,7 +396,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ basem
     drawRef.current = draw
     console.log("[APEX-Draw] TerraDraw started, mode=static")
 
-    draw.on("finish", (_id) => {
+    draw.on("finish", () => {
       const snapshot = draw.getSnapshot()
       if (snapshot.length > 0) {
         const geom = snapshot[snapshot.length - 1].geometry as any
@@ -498,7 +498,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ basem
   const highlightFeature = useCallback((sourceId: string, featureId: number | null) => {
     if (!map.current) return
     if (lastHighlighted.current) {
-      try { map.current.setFeatureState(lastHighlighted.current, { highlighted: false }) } catch {}
+      try { map.current.setFeatureState(lastHighlighted.current, { highlighted: false }) } catch { /* noop */ }
       lastHighlighted.current = null
     }
     if (featureId !== null && map.current.getSource(sourceId)) {
