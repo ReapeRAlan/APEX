@@ -13,18 +13,18 @@ const C = {
 } as const
 
 interface LoginPageProps {
-  onLogin: (token: string, user: { username: string; role: string; zone: string }) => void
+  onLogin: (token: string, user: { email: string; role: string; full_name: string }) => void
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [username, setUsername] = useState("")
+  const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!username || !password) return
+    if (!email || !password) return
     setLoading(true)
     setError(null)
 
@@ -32,7 +32,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -72,12 +72,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* Username */}
         <label className="block text-xs font-medium mb-1" style={{ color: C.text2 }}>
-          Usuario
+          Correo electrónico
         </label>
         <input
-          type="text"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
           className="w-full rounded-md px-3 py-2 text-sm mb-4 outline-none focus:ring-2"
           style={{
             backgroundColor: C.bgBase,
@@ -86,8 +86,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             // @ts-ignore -- ring color
             "--tw-ring-color": C.accent,
           } as React.CSSProperties}
-          placeholder="usuario"
-          autoComplete="username"
+          placeholder="usuario@profepa.gob.mx"
+          autoComplete="email"
         />
 
         {/* Password */}
@@ -118,7 +118,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         {/* Submit */}
         <button
           type="submit"
-          disabled={loading || !username || !password}
+          disabled={loading || !email || !password}
           className="w-full rounded-md py-2 text-sm font-medium transition-opacity disabled:opacity-40"
           style={{ backgroundColor: C.accent, color: "#fff" }}
         >

@@ -23,12 +23,12 @@ function App() {
 
   // ── Auth state ──
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("apex_token"))
-  const [user, setUser] = useState<{ username: string; role: string; zone: string } | null>(() => {
+  const [user, setUser] = useState<{ email: string; role: string; full_name: string } | null>(() => {
     try { return JSON.parse(localStorage.getItem("apex_user") || "null") } catch { return null }
   })
   const [rightPanel, setRightPanel] = useState<"none" | "strategic" | "simulator" | "impact">("none")
 
-  const handleLogin = (t: string, u: { username: string; role: string; zone: string }) => {
+  const handleLogin = (t: string, u: { email: string; role: string; full_name: string }) => {
     setToken(t)
     setUser(u)
   }
@@ -336,7 +336,7 @@ function App() {
         <div className="flex items-center gap-1 px-3 py-1 border-b" style={{ borderColor: C.border, backgroundColor: C.bgPanel }}>
           {user && (
             <span className="text-[10px] mr-auto" style={{ color: C.text2 }}>
-              {user.username} ({user.role})
+              {user.email} ({user.role})
             </span>
           )}
           {(["strategic", "simulator", "impact"] as const).map((p) => (

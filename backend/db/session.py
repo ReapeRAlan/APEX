@@ -21,7 +21,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 if not DATABASE_URL:
     # Fallback to SQLite for backwards compatibility
-    _db_path = os.getenv("DB_PATH", "./db/apex.sqlite")
+    # Resolve relative to the APEX project root (parent of backend/)
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    _default_db = os.path.join(_project_root, "db", "apex.sqlite")
+    _db_path = os.getenv("DB_PATH", _default_db)
     DATABASE_URL = f"sqlite:///{_db_path}"
     logger.info("No DATABASE_URL set — falling back to SQLite: %s", _db_path)
 
@@ -61,6 +64,10 @@ def get_db() -> Session:
         raise
     finally:
         session.close()
+
+
+# Alias used by newer modules (kpi, mlflow_pipeline, etc.)
+get_session = get_db
 
 
 def check_connection() -> bool:
