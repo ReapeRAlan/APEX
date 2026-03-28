@@ -1,0 +1,163 @@
+﻿# ============================================================
+# APEX â€” Docker Compose (Development)
+# ============================================================
+# Services:
+#   - postgres:    PostgreSQL 16 + PostGIS 3.4
+#   - redis:       Redis 7 (Celery broker + result cache)
+#   - backend:     FastAPI app (main API)
+#   - gee-worker:  Celery worker for GEE tasks
+#   - gpu-worker:  Celery worker for PyTorch/CUDA inference
+#   - scheduler:   APScheduler for periodic monitoring
+#   - frontend:    Vite dev server (React 19)
+# ============================================================
+
+services:
+  # â”€â”€ PostgreSQL + PostGIS â”€â”€
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: apex-postgres
+    environment:
+      POSTGRES_DB: apex
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apex -d apex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # â”€â”€ Redis â”€â”€
+  redis:
+    image: redis:7-alpine
+    container_name: apex-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # â”€â”€ FastAPI Backend â”€â”€
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apex-backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://apex:${POSTGRES_PASSWORD:-changeme}@postgres:5432/apex
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # â”€â”€ GEE Worker (Celery) â”€â”€
+  gee-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.gee-worker
+    container_name: apex-gee-worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://apex:${POSTGRES_PASSWORD:-changeme}@postgres:5432/apex
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # â”€â”€ GPU Worker (Celery â€” PyTorch/CUDA) â”€â”€
+  gpu-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apex-gpu-worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://apex:${POSTGRES_PASSWORD:-changeme}@postgres:5432/apex
+      REDIS_URL: redis://redis:6379/0
+    command: >
+      python -m celery -A backend.worker worker
+      --loglevel=info --concurrency=1 -Q gpu
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # â”€â”€ APScheduler (monitoring) â”€â”€
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.gee-worker
+    container_name: apex-scheduler
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://apex:${POSTGRES_PASSWORD:-changeme}@postgres:5432/apex
+      REDIS_URL: redis://redis:6379/0
+    command: python -m backend.scheduler
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # â”€â”€ Frontend (Vite dev) â”€â”€
+  frontend:
+    image: node:22-alpine
+    container_name: apex-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:8008
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:

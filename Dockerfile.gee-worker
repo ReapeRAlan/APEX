@@ -1,0 +1,34 @@
+# ============================================================
+# APEX GEE Worker — Lightweight Dockerfile (no GPU needed)
+# Handles Google Earth Engine downloads and processing
+# ============================================================
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gdal-bin \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/requirements.txt /app/requirements.txt
+
+# Install deps without GPU packages
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ /app/backend/
+
+RUN mkdir -p /app/db /app/logs /app/data/tiles
+
+EXPOSE 8009
+
+CMD ["python", "-m", "celery", "-A", "backend.worker", "worker", \
+     "--loglevel=info", "--concurrency=2", "-Q", "gee"]

@@ -1,0 +1,72 @@
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# GEE
+earthengine-api==0.1.400
+
+# Geoespacial
+rasterio==1.3.10
+GDAL==3.8.4
+geopandas==0.14.4
+shapely==2.0.4
+pyproj==3.6.1
+contextily>=1.5.0
+
+# Deep Learning
+# torch==2.3.0+cu121        # Instalado aparte vía index-url
+# torchvision==0.18.0+cu121 # Instalado aparte vía index-url
+torchgeo==0.5.2
+segmentation-models-pytorch==0.3.3
+
+# Machine Learning
+scikit-learn==1.4.2
+numpy==1.26.4
+scipy==1.13.0
+
+# Procesamiento de imágenes
+opencv-python-headless==4.9.0.80
+Pillow==10.3.0
+
+# Reportes PDF/Word
+reportlab>=4.0.7
+python-docx>=0.8.11
+matplotlib>=3.8.0
+
+# Base de datos
+aiosqlite==0.20.0
+SQLAlchemy==2.0.30
+psycopg2-binary==2.9.9
+GeoAlchemy2==0.15.0
+alembic==1.13.1
+
+# Redis / Task queue
+redis==5.0.4
+celery==5.4.0
+
+# Auth (JWT)
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# H3 Geospatial indexing
+h3==3.7.7
+
+# NLP / News monitoring
+spacy==3.7.5
+feedparser==6.0.11
+
+# Generative AI
+google-cloud-aiplatform==1.49.0
+
+# ML Experiment tracking
+mlflow==2.12.1
+
+# Routing optimization
+ortools==9.10.4067
+
+# Utilidades
+python-dotenv==1.0.1
+pydantic==2.7.1
+httpx==0.27.0
+tqdm==4.66.4

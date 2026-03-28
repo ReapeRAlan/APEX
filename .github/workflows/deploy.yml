@@ -1,0 +1,49 @@
+# ============================================================
+# APEX Deploy — Staging deploy on merge to main
+# ============================================================
+
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
+
+      - name: Build and push backend image
+        run: |
+          docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/apex-backend:${{ github.sha }} .
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/apex-backend:${{ github.sha }}
+
+      - name: Build and push GEE worker image
+        run: |
+          docker build -f Dockerfile.gee-worker -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/apex-gee-worker:${{ github.sha }} .
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/apex-gee-worker:${{ github.sha }}
+
+      - name: Deploy to Cloud Run (staging)
+        run: |
+          gcloud run deploy apex-backend-staging \
+            --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/apex-backend:${{ github.sha }} \
+            --platform managed \
+            --region us-central1 \
+            --allow-unauthenticated \
+            --set-env-vars "DATABASE_URL=${{ secrets.STAGING_DATABASE_URL }}" \
+            --set-env-vars "REDIS_URL=${{ secrets.STAGING_REDIS_URL }}" \
+            --set-env-vars "SECRET_KEY=${{ secrets.STAGING_SECRET_KEY }}"

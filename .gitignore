@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+*.tsbuildinfo
+
+# Data / DB
+*.sqlite
+*.sqlite3
+db/*.sqlite
+data/tiles/
+data/ml_models/
+logs/
+
+# Environment / Secrets — NEVER commit
+.env
+.env.*
+*.env
+backend/.env
+backend/.env.*
+**/service-account*.json
+**/credentials*.json
+**/*secret*
+**/*key*.json
+gee_credentials.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# GEE credentials
+*-key.json
+*.private-key.json
+
+# Large model files
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Test outputs
+e2e_output.txt
+e2e_results.json
+e2e_timeline_results.json
+test_report.json
