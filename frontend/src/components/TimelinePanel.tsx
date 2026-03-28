@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import {
   ComposedChart, Area, Line, XAxis, YAxis,
   Tooltip, ResponsiveContainer,
@@ -77,6 +77,8 @@ export default function TimelinePanel({
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const prevStepRef = useRef<string>("")
+  const prevProgressRef = useRef<number>(0)
 
   useEffect(() => {
     if (!jobId) return
@@ -93,8 +95,28 @@ export default function TimelinePanel({
           return
         }
         const statusData = await statusRes.json()
-        setProgress(statusData.progress ?? 0)
-        setCurrentStep(statusData.current_step ?? "")
+        const step = statusData.current_step ?? ""
+        const pct = statusData.progress ?? 0
+        setProgress(pct)
+        setCurrentStep(step)
+
+        // Browser console logging — visible in DevTools
+        if (step && step !== prevStepRef.current) {
+          console.log(
+            `%c[APEX-Timeline] ▶ ${step}`,
+            "color: #4ade80; font-weight: bold"
+          )
+          prevStepRef.current = step
+        }
+        if (pct !== prevProgressRef.current) {
+          if (pct === 100) {
+            console.log(
+              "%c[APEX-Timeline] ✓ Pipeline completado",
+              "color: #4ade80; font-weight: bold"
+            )
+          }
+          prevProgressRef.current = pct
+        }
 
         if (statusData.status === "failed") {
           setStatus("failed")
@@ -169,17 +191,21 @@ export default function TimelinePanel({
   if (status === "polling" || status === "loading") {
     return (
       <div className="p-3 rounded border" style={{ backgroundColor: "#21262d", borderColor: "#30363d" }}>
-        <p className="text-xs font-bold mb-2" style={{ color: "#d29922" }}>
-          {status === "polling" ? "Procesando Timeline..." : "Cargando resultados..."}
-        </p>
-        <div className="w-full h-1.5 rounded bg-[#30363d] mb-2">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-bold" style={{ color: "#d29922" }}>
+            {status === "polling" ? "Procesando Timeline..." : "Cargando resultados..."}
+          </p>
+          <span className="text-xs font-mono font-bold" style={{ color: "#d29922" }}>{progress}%</span>
+        </div>
+        <div className="w-full h-2 rounded bg-[#30363d] mb-3">
           <div
             className="h-full rounded transition-all duration-500"
             style={{ width: `${progress}%`, backgroundColor: "#d29922" }}
           />
         </div>
-        <p className="text-[10px]" style={{ color: "#8b949e" }}>{currentStep || "Iniciando..."}</p>
-        <p className="text-[10px]" style={{ color: "#8b949e" }}>{progress}%</p>
+        <p className="text-xs font-semibold" style={{ color: "#4ade80" }}>
+          ▶ {currentStep || "Iniciando..."}
+        </p>
       </div>
     )
   }
