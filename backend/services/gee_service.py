@@ -7,6 +7,7 @@ import requests
 import shutil
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,19 @@ BANDS = ["B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B11", "B12"]
 SCALE = 10  # 10m — resolución nativa de Sentinel-2 bandas B2/B3/B4/B8
 MAX_TILE_BYTES = 12_000_000  # 12 MB estimado — margen amplio bajo el límite real de 48 MiB
 BYTES_PER_PIXEL_BAND = 8  # GEE usa float64 internamente para el cálculo de tamaño
+
+_GEE_GETINFO_TIMEOUT = 60
+_GEE_COMPUTE_TIMEOUT = 180
+
+
+def _gee_call_with_timeout(fn, timeout: int, label: str = "GEE"):
+    """Run a blocking GEE call in a thread with a timeout."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            raise TimeoutError(f"[{label}] GEE call timed out after {timeout}s")
 
 
 class GEEService:
@@ -315,7 +329,9 @@ class GEEService:
             .select(prob_bands)
         )
         # Verificar que hay imágenes en el rango solicitado
-        count = dw_col.size().getInfo()
+        count = _gee_call_with_timeout(
+            lambda: dw_col.size().getInfo(), _GEE_GETINFO_TIMEOUT, "DW",
+        )
         if count == 0:
             print(f"[DW] Sin imágenes en {start_date}–{end_date}, ampliando a ±30 días")
             start_ee = ee.Date(start_date).advance(-30, "day")
@@ -325,7 +341,9 @@ class GEEService:
                 .filter(ee.Filter.And(ee.Filter.bounds(aoi_ee), ee.Filter.date(start_ee, end_ee)))
                 .select(prob_bands)
             )
-            count = dw_col.size().getInfo()
+            count = _gee_call_with_timeout(
+                lambda: dw_col.size().getInfo(), _GEE_GETINFO_TIMEOUT, "DW",
+            )
             if count == 0:
                 raise ValueError(f"Sin imágenes DW para {start_date}–{end_date} ni con margen de 30 días")
         print(f"[DW] {count} imagenes disponibles para el periodo")
@@ -470,7 +488,10 @@ class GEEService:
             tile["max_lon"], tile["max_lat"],
         ])
 
-        proj = ee.Projection("EPSG:4326").atScale(scale).getInfo()
+        proj = _gee_call_with_timeout(
+            lambda: ee.Projection("EPSG:4326").atScale(scale).getInfo(),
+            _GEE_GETINFO_TIMEOUT, "DW",
+        )
         scale_x = proj["transform"][0]   # siempre positivo
 
         width = max(1, int(round(abs(tile["max_lon"] - tile["min_lon"]) / abs(scale_x))))
@@ -514,7 +535,10 @@ class GEEService:
             },
         }
 
-        tif_bytes = ee.data.computePixels(request)
+        tif_bytes = _gee_call_with_timeout(
+            lambda: ee.data.computePixels(request),
+            _GEE_COMPUTE_TIMEOUT, "DW",
+        )
         tif_path = output_dir / f"{job_id}_tile_{idx}.tif"
         tif_path.write_bytes(tif_bytes)
 

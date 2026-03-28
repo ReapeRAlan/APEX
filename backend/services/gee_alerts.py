@@ -13,6 +13,7 @@ import ee
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, date
 from pathlib import Path
 
@@ -37,6 +38,20 @@ SCALE_S2 = 10       # 10m for Sentinel-2 / GLAD-S2 alerts
 SCALE_RADD = 10     # 10m for RADD (Sentinel-1)
 SCALE_MODIS = 500   # 500m for MODIS burned area
 MAX_TILE_PX = 3000  # max pixels per tile side
+
+# Timeout (seconds) for blocking GEE RPC calls
+_GEE_GETINFO_TIMEOUT = 60      # bandNames().getInfo(), size().getInfo()
+_GEE_COMPUTE_TIMEOUT = 180     # computePixels() per tile
+
+
+def _gee_call_with_timeout(fn, timeout: int, label: str = "GEE"):
+    """Run a blocking GEE call in a thread with a timeout."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            raise TimeoutError(f"[{label}] GEE call timed out after {timeout}s")
 
 
 class GEEAlertsService:
@@ -142,7 +157,10 @@ class GEEAlertsService:
                 }
 
                 try:
-                    pixels = ee.data.computePixels(request)
+                    pixels = _gee_call_with_timeout(
+                        lambda req=request: ee.data.computePixels(req),
+                        _GEE_COMPUTE_TIMEOUT, tag,
+                    )
                     tile_path = output_dir / f"{job_id}_{tag}_tile_{row}_{col}.tif"
                     tile_path.write_bytes(pixels)
                     tile_paths.append(tile_path)
@@ -290,7 +308,10 @@ class GEEAlertsService:
             try:
                 candidate = ee.Image(asset)
                 # Force a server-side check by requesting band names
-                bands = candidate.bandNames().getInfo()
+                bands = _gee_call_with_timeout(
+                    lambda img=candidate: img.bandNames().getInfo(),
+                    _GEE_GETINFO_TIMEOUT, "GLAD-GEE",
+                )
                 glad_image = candidate
                 used_asset = asset
                 asset_bands = bands
@@ -407,7 +428,10 @@ class GEEAlertsService:
 
         try:
             radd = ee.Image(RADD_ASSET)
-            radd_bands = radd.bandNames().getInfo()
+            radd_bands = _gee_call_with_timeout(
+                lambda: radd.bandNames().getInfo(),
+                _GEE_GETINFO_TIMEOUT, "RADD-GEE",
+            )
             print(f"[RADD-GEE] Asset: {RADD_ASSET}  (bandas: {radd_bands[:6]})")
         except Exception as e:
             raise RuntimeError(f"Asset RADD no disponible: {e}")

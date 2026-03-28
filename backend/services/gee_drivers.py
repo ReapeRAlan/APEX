@@ -9,12 +9,24 @@ import ee
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import rasterio
 from rasterio.merge import merge as rio_merge
 
 from ..config import settings
+
+_GEE_COMPUTE_TIMEOUT = 180
+
+
+def _gee_call_with_timeout(fn, timeout: int, label: str = "GEE"):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            raise TimeoutError(f"[{label}] GEE call timed out after {timeout}s")
 
 DRIVERS_ASSET = "projects/landandcarbon/assets/wri_gdm_drivers_forest_loss_1km/v1_2_2001_2024"
 SCALE = 1000  # 1km resolution
@@ -138,7 +150,10 @@ class GEEDriversService:
                 }
 
                 try:
-                    pixels = ee.data.computePixels(request)
+                    pixels = _gee_call_with_timeout(
+                        lambda req=request: ee.data.computePixels(req),
+                        _GEE_COMPUTE_TIMEOUT, "Drivers-GEE",
+                    )
                     tile_path = output_dir / f"{job_id}_drivers_tile_{row}_{col}.tif"
                     tile_path.write_bytes(pixels)
                     tile_paths.append(tile_path)

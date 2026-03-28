@@ -9,6 +9,7 @@ import ee
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import rasterio
@@ -19,6 +20,19 @@ from ..config import settings
 S1_ASSET = "COPERNICUS/S1_GRD"
 SCALE = 10  # 10m Sentinel-1 resolution
 MAX_TILE_PX = 3000  # max pixels per tile side
+
+_GEE_GETINFO_TIMEOUT = 60
+_GEE_COMPUTE_TIMEOUT = 180
+
+
+def _gee_call_with_timeout(fn, timeout: int, label: str = "GEE"):
+    """Run a blocking GEE call in a thread with a timeout."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            raise TimeoutError(f"[{label}] GEE call timed out after {timeout}s")
 
 
 class GEESARService:
@@ -107,7 +121,10 @@ class GEESARService:
             .filterBounds(aoi_ee)
         )
 
-        n_scenes = s1_collection.size().getInfo()
+        n_scenes = _gee_call_with_timeout(
+            lambda: s1_collection.size().getInfo(),
+            _GEE_GETINFO_TIMEOUT, "SAR-GEE",
+        )
         print(f"[SAR-GEE] {n_scenes} escenas Sentinel-1 encontradas")
 
         if n_scenes == 0:
@@ -178,7 +195,10 @@ class GEESARService:
                 }
 
                 try:
-                    pixels = ee.data.computePixels(request)
+                    pixels = _gee_call_with_timeout(
+                        lambda req=request: ee.data.computePixels(req),
+                        _GEE_COMPUTE_TIMEOUT, "SAR-GEE",
+                    )
                     tile_path = output_dir / f"{job_id}_sar_tile_{row}_{col}.tif"
                     tile_path.write_bytes(pixels)
                     tile_paths.append(tile_path)

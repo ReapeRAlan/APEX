@@ -886,6 +886,22 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                 job_log(job_id, f"[{jid}] ⚠ Drivers error: {e}")
 
         # ── Phase 2: Per-year analysis with ALL engines ──
+        # Pre-create GEE service instances (avoid re-init per year)
+        _alerts_svc = None
+        _sar_svc = None
+        if "alerts" in engines or "fire" in engines:
+            try:
+                _alerts_svc = GEEAlertsService()
+                _alerts_svc.initialize()
+            except Exception as e:
+                job_log(job_id, f"[{jid}] ⚠ GEE Alerts init failed: {e}")
+        if "sar" in engines:
+            try:
+                _sar_svc = GEESARService()
+                _sar_svc.initialize()
+            except Exception as e:
+                job_log(job_id, f"[{jid}] ⚠ GEE SAR init failed: {e}")
+
         sorted_years = sorted(rasters_dw.keys()) if needs_dw else list(range(start_year, end_year + 1))
         for i, year in enumerate(sorted_years):
             pct = int(35 + (i / len(sorted_years)) * 55)
@@ -951,16 +967,14 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                 }
 
             # ── Alerts GLAD/RADD (per year) ──
-            if "alerts" in engines:
+            if "alerts" in engines and _alerts_svc:
                 update_job_status(job_id, "running", pct, f"{year} — Descargando alertas GLAD/RADD...")
                 try:
-                    alerts_svc = GEEAlertsService()
-                    alerts_svc.initialize()
                     alerts_eng = AlertsEngine()
                     glad_feats, radd_feats = [], []
 
                     try:
-                        glad_path = alerts_svc.get_glad_alerts(
+                        glad_path = _alerts_svc.get_glad_alerts(
                             aoi, year_start, year_end,
                             job_id=f"{job_id}_glad_{year}"
                         )
@@ -969,7 +983,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                     except Exception as e_glad:
                         job_log(job_id, f"[{jid}] {year} GLAD: sin datos ({e_glad})")
                     try:
-                        radd_path = alerts_svc.get_radd_alerts(
+                        radd_path = _alerts_svc.get_radd_alerts(
                             aoi, year_start, year_end,
                             job_id=f"{job_id}_radd_{year}"
                         )
@@ -987,14 +1001,12 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                     job_log(job_id, f"[{jid}] {year} ⚠ Alerts error: {e}")
 
             # ── MODIS Fire / Burned Area (full year — fires happen year-round) ──
-            if "fire" in engines:
+            if "fire" in engines and _alerts_svc:
                 update_job_status(job_id, "running", pct, f"{year} — Analizando incendios MODIS...")
                 try:
-                    fire_svc = GEEAlertsService()
-                    fire_svc.initialize()
                     fire_year_start = f"{year}-01-01"
                     fire_year_end = f"{year}-12-31"
-                    fire_path = fire_svc.get_modis_burned_area(
+                    fire_path = _alerts_svc.get_modis_burned_area(
                         aoi, fire_year_start, fire_year_end,
                         job_id=f"{job_id}_fire_{year}"
                     )
@@ -1008,19 +1020,17 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                     job_log(job_id, f"[{jid}] {year} ⚠ Fire error: {e}")
 
             # ── SAR Sentinel-1 Change Detection (per year) ──
-            if "sar" in engines and i > 0:
+            if "sar" in engines and i > 0 and _sar_svc:
                 update_job_status(job_id, "running", pct, f"{year} — Procesando SAR Sentinel-1...")
                 try:
-                    sar_svc = GEESARService()
-                    sar_svc.initialize()
                     sar_eng = SAREngine()
 
                     prev_year = sorted_years[i - 1]
-                    sar_t1_path = sar_svc.get_sentinel1_composite(
+                    sar_t1_path = _sar_svc.get_sentinel1_composite(
                         aoi, f"{prev_year}-{s_start}", f"{prev_year}-{s_end}",
                         job_id=f"{job_id}_sar_t1_{year}"
                     )
-                    sar_t2_path = sar_svc.get_sentinel1_composite(
+                    sar_t2_path = _sar_svc.get_sentinel1_composite(
                         aoi, year_start, year_end,
                         job_id=f"{job_id}_sar_t2_{year}"
                     )

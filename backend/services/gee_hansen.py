@@ -9,12 +9,24 @@ import ee
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import rasterio
 from rasterio.merge import merge as rio_merge
 
 from ..config import settings
+
+_GEE_COMPUTE_TIMEOUT = 180
+
+
+def _gee_call_with_timeout(fn, timeout: int, label: str = "GEE"):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            raise TimeoutError(f"[{label}] GEE call timed out after {timeout}s")
 
 HANSEN_ASSET = "UMD/hansen/global_forest_change_2024_v1_12"
 SCALE = 30  # 30m resolution
@@ -158,7 +170,10 @@ class GEEHansenService:
                 }
 
                 try:
-                    pixels = ee.data.computePixels(request)
+                    pixels = _gee_call_with_timeout(
+                        lambda req=request: ee.data.computePixels(req),
+                        _GEE_COMPUTE_TIMEOUT, "Hansen-GEE",
+                    )
                     tile_path = output_dir / f"{job_id}_hansen_tile_{row}_{col}.tif"
                     tile_path.write_bytes(pixels)
                     tile_paths.append(tile_path)
