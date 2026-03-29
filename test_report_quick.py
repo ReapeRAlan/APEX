@@ -1,0 +1,27 @@
+"""Quick PDF-only test."""
+import requests
+
+job_id = "4ef7aebe-2c28-4e33-ab0a-3d739c4b0d58"
+API = "http://127.0.0.1:8008/api"
+
+print("Requesting PDF (may take 2-3 min)...")
+r = requests.get(f"{API}/export/{job_id}/report?format=pdf", timeout=300)
+ct = r.headers.get("content-type", "?")
+print(f"PDF: status={r.status_code}, size={len(r.content)} bytes, type={ct}")
+if r.status_code == 200:
+    with open("test_report.pdf", "wb") as f:
+        f.write(r.content)
+    print("  Saved: test_report.pdf")
+else:
+    print(f"  ERROR: {r.text[:500]}")
+
+print("\nRequesting Word (may take 2-3 min)...")
+r2 = requests.get(f"{API}/export/{job_id}/report?format=docx", timeout=300)
+ct2 = r2.headers.get("content-type", "?")
+print(f"DOCX: status={r2.status_code}, size={len(r2.content)} bytes, type={ct2}")
+if r2.status_code == 200:
+    with open("test_report.docx", "wb") as f:
+        f.write(r2.content)
+    print("  Saved: test_report.docx")
+else:
+    print(f"  ERROR: {r2.text[:500]}")

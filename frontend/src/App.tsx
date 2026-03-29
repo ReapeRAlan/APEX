@@ -8,6 +8,7 @@ import LoginPage from "./components/LoginPage"
 import StrategicPanel from "./components/StrategicPanel"
 import SimulatorPanel from "./components/SimulatorPanel"
 import ImpactDashboard from "./components/ImpactDashboard"
+import ForecastPanel from "./components/ForecastPanel"
 import type { UploadedPolygon } from "./components/PolygonManager"
 import { API_BASE_URL } from "./config"
 
@@ -26,7 +27,7 @@ function App() {
   const [user, setUser] = useState<{ email: string; role: string; full_name: string } | null>(() => {
     try { return JSON.parse(localStorage.getItem("apex_user") || "null") } catch { return null }
   })
-  const [rightPanel, setRightPanel] = useState<"none" | "strategic" | "simulator" | "impact">("none")
+  const [rightPanel, setRightPanel] = useState<"none" | "strategic" | "simulator" | "impact" | "forecast">("none")
 
   // ── Lifted state (must be declared before any early return) ──
   const [aoi, setAoi] = useState<object | null>(null)
@@ -68,6 +69,7 @@ function App() {
   // ── Clear AOI ──
   const handleClearAoi = useCallback(() => {
     mapRef.current?.clearAOI()
+    mapRef.current?.clearForecastLayers()
     setAoi(null)
     setResults(null)
     setJobId(null)
@@ -185,6 +187,7 @@ function App() {
     setIsAnalyzing(true)
     setAnalysisStatus("running")
     setTimelineJobId(null)
+    mapRef.current?.clearForecastLayers()
     try {
       const res = await fetch(`${API_BASE_URL}/api/timeline`, {
         method: "POST",
@@ -339,7 +342,7 @@ function App() {
               {user.email} ({user.role})
             </span>
           )}
-          {(["strategic", "simulator", "impact"] as const).map((p) => (
+          {(["strategic", "simulator", "impact", "forecast"] as const).map((p) => (
             <button
               key={p}
               onClick={() => setRightPanel((prev) => prev === p ? "none" : p)}
@@ -349,7 +352,7 @@ function App() {
                 color: rightPanel === p ? "#58a6ff" : C.text2,
               }}
             >
-              {p === "strategic" ? "Estratégico" : p === "simulator" ? "Simulador" : "Impacto"}
+              {p === "strategic" ? "Estratégico" : p === "simulator" ? "Simulador" : p === "impact" ? "Impacto" : "Predicción"}
             </button>
           ))}
           <button
@@ -425,6 +428,7 @@ function App() {
           {rightPanel === "strategic" && <StrategicPanel token={token} />}
           {rightPanel === "simulator" && <SimulatorPanel token={token} />}
           {rightPanel === "impact" && <ImpactDashboard token={token} />}
+          {rightPanel === "forecast" && <ForecastPanel token={token} aoi={aoi} timelineJobId={timelineJobId} onSpatialForecast={(data) => mapRef.current?.renderForecastLayers(data)} onClearForecast={() => mapRef.current?.clearForecastLayers()} />}
         </div>
       )}
 

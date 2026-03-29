@@ -104,7 +104,7 @@ export const LAYER_REGISTRY: Record<string, LayerDef> = {
     layerIds: [PREFIX + "firms_hotspots-circle", PREFIX + "firms_hotspots-heat", PREFIX + "firms_hotspots-cluster-fill"],
     color: "#ff3b30", lineColor: "#ff6b6b", opacity: 0.8,
     popupFn: (p) => p.type === "fire_cluster"
-      ? `<b style="color:#ff3b30">Agrupacion de incendios</b><br>Detecciones: ${p.detection_count ?? "?"}<br>FRP total: ${p.total_frp_mw ?? "?"} MW<br>Satelites: ${(p.satellites || []).join(", ")}<br>Fechas: ${p.date_range ?? "?"}`
+      ? `<b style="color:#ff3b30">Agrupacion de incendios</b><br>Detecciones: ${p.detection_count ?? "?"}<br>FRP total: ${p.total_frp_mw ?? "?"} MW<br>Satelites: ${Array.isArray(p.satellites) ? p.satellites.join(", ") : (p.satellites ?? "?")}<br>Fechas: ${p.date_range ?? "?"}`
       : `<b style="color:#ff3b30">Hotspot FIRMS</b><br>FRP: ${p.frp_mw ?? "?"} MW<br>Confianza: ${p.confidence_label ?? "?"}<br>Satelite: ${p.satellite ?? "?"}<br>Fecha: ${p.acq_datetime ?? "?"}<br>Fuente: ${p.source ?? "?"}`,
   },
 }
@@ -181,6 +181,8 @@ export interface MapViewHandle {
   toggleLayerVisibility: (key: LayerKey, visible: boolean) => void
   renderYearLayers: (year: number, yearData: any) => void
   clearYearLayers: () => void
+  renderForecastLayers: (spatialForecast: { deforestation?: any; urban_expansion?: any }) => void
+  clearForecastLayers: () => void
   clearAOI: () => void
   setDrawMode: (mode: DrawMode) => void
   renderUploadedPolygons: (polygons: { id: string; feature_collection: any; color: string; visible: boolean }[]) => void
@@ -522,10 +524,126 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ basem
   const YEAR_LAYERS = ["year-def-fill","year-def-line","year-ue-fill","year-ue-line","year-veg-fill"]
   const YEAR_SOURCES = ["year-deforestation","year-urban","year-vegetation"]
 
+  const FORECAST_LAYERS = ["fc-def-fill","fc-def-line","fc-ue-fill","fc-ue-line"]
+  const FORECAST_SOURCES = ["fc-deforestation","fc-urban"]
+
   const clearYearLayers = useCallback(() => {
     if (!map.current) return
     YEAR_LAYERS.forEach(id => { if (map.current!.getLayer(id)) map.current!.removeLayer(id) })
     YEAR_SOURCES.forEach(id => { if (map.current!.getSource(id)) map.current!.removeSource(id) })
+  }, [])
+
+  const clearForecastLayers = useCallback(() => {
+    if (!map.current) return
+    FORECAST_LAYERS.forEach(id => { if (map.current!.getLayer(id)) map.current!.removeLayer(id) })
+    FORECAST_SOURCES.forEach(id => { if (map.current!.getSource(id)) map.current!.removeSource(id) })
+  }, [])
+
+  const renderForecastLayers = useCallback((spatialForecast: { deforestation?: any; urban_expansion?: any }) => {
+    if (!map.current || !spatialForecast) return
+
+    // Clear previous forecast layers
+    FORECAST_LAYERS.forEach(id => { if (map.current!.getLayer(id)) map.current!.removeLayer(id) })
+    FORECAST_SOURCES.forEach(id => { if (map.current!.getSource(id)) map.current!.removeSource(id) })
+
+    // Deforestation forecast — purple dashed
+    const geoD = spatialForecast.deforestation
+    if (geoD?.features?.length > 0) {
+      map.current.addSource("fc-deforestation", { type: "geojson", data: geoD })
+      map.current.addLayer({
+        id: "fc-def-fill", type: "fill", source: "fc-deforestation",
+        paint: {
+          "fill-color": ["match", ["get", "risk"],
+            "CRITICAL", "#dc2626",
+            "HIGH", "#ea580c",
+            "MEDIUM", "#d97706",
+            "#65a30d"] as any,
+          "fill-opacity": 0.25,
+        },
+      })
+      map.current.addLayer({
+        id: "fc-def-line", type: "line", source: "fc-deforestation",
+        paint: {
+          "line-color": "#a855f7",
+          "line-width": 2.5,
+          "line-dasharray": [4, 3],
+        },
+      })
+    }
+
+    // Urban expansion forecast — cyan dashed
+    const geoU = spatialForecast.urban_expansion
+    if (geoU?.features?.length > 0) {
+      map.current.addSource("fc-urban", { type: "geojson", data: geoU })
+      map.current.addLayer({
+        id: "fc-ue-fill", type: "fill", source: "fc-urban",
+        paint: {
+          "fill-color": ["match", ["get", "risk"],
+            "CRITICAL", "#dc2626",
+            "HIGH", "#ea580c",
+            "MEDIUM", "#d97706",
+            "#65a30d"] as any,
+          "fill-opacity": 0.2,
+        },
+      })
+      map.current.addLayer({
+        id: "fc-ue-line", type: "line", source: "fc-urban",
+        paint: {
+          "line-color": "#06b6d4",
+          "line-width": 2.5,
+          "line-dasharray": [4, 3],
+        },
+      })
+    }
+
+    // Popups for forecast layers
+    const addFcPopup = (layerId: string) => {
+      map.current!.on("click", layerId, (e) => {
+        const p = e.features?.[0]?.properties
+        if (!p) return
+        if (activePopup.current) activePopup.current.remove()
+        const riskColors: Record<string, string> = { CRITICAL: "#dc2626", HIGH: "#ea580c", MEDIUM: "#d97706", LOW: "#65a30d" }
+        const color = riskColors[p.risk] || "#a855f7"
+        activePopup.current = new maplibregl.Popup({ maxWidth: "220px" })
+          .setLngLat(e.lngLat)
+          .setHTML(
+            `<b style="color:${color}">Predicción ${p.year}</b><br>` +
+            `Área proyectada: <b>${p.predicted_ha} ha</b><br>` +
+            `Riesgo: <b style="color:${color}">${p.risk}</b><br>` +
+            `<span style="font-size:11px;color:#888">${p.years_ahead} año(s) en el futuro</span>`
+          )
+          .addTo(map.current!)
+      })
+      map.current!.on("mouseenter", layerId, () => { map.current!.getCanvas().style.cursor = "pointer" })
+      map.current!.on("mouseleave", layerId, () => { map.current!.getCanvas().style.cursor = "" })
+    }
+    if (map.current.getLayer("fc-def-fill")) addFcPopup("fc-def-fill")
+    if (map.current.getLayer("fc-ue-fill")) addFcPopup("fc-ue-fill")
+
+    // Fly to forecast area
+    try {
+      const allFeats = [...(geoD?.features || []), ...(geoU?.features || [])]
+      if (allFeats.length > 0) {
+        const coords: number[][] = []
+        const extractCoords = (g: any) => {
+          if (!g) return
+          if (g.type === "Polygon") g.coordinates.forEach((ring: number[][]) => coords.push(...ring))
+          else if (g.type === "MultiPolygon") g.coordinates.forEach((poly: number[][][]) => poly.forEach((ring: number[][]) => coords.push(...ring)))
+        }
+        allFeats.forEach((f: any) => extractCoords(f.geometry))
+        if (coords.length > 0) {
+          const lngs = coords.map(c => c[0])
+          const lats = coords.map(c => c[1])
+          map.current.fitBounds(
+            [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+            { padding: 80, duration: 1200 }
+          )
+        }
+      }
+    } catch { /* ignore fitBounds errors */ }
+
+    setTimelineToast("Mostrando predicción espacial en el mapa")
+    setTimeout(() => setTimelineToast(null), 4000)
   }, [])
 
   // ── Clear AOI and terra-draw features ──
@@ -732,12 +850,14 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ basem
     toggleLayerVisibility,
     renderYearLayers,
     clearYearLayers,
+    renderForecastLayers,
+    clearForecastLayers,
     clearAOI,
     setDrawMode,
     renderUploadedPolygons,
     flyToBbox,
     setAoiFromGeometry,
-  }), [highlightFeature, flyToCoord, toggleLayerVisibility, renderYearLayers, clearYearLayers, clearAOI, setDrawMode, renderUploadedPolygons, flyToBbox, setAoiFromGeometry])
+  }), [highlightFeature, flyToCoord, toggleLayerVisibility, renderYearLayers, clearYearLayers, renderForecastLayers, clearForecastLayers, clearAOI, setDrawMode, renderUploadedPolygons, flyToBbox, setAoiFromGeometry])
 
   return (
     <div className="relative w-full h-full">

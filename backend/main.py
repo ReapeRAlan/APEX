@@ -4,7 +4,7 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import analysis, export, monitoring, polygons, grid, beliefs, pomdp, auth, strategic, kpi
+from .routers import analysis, export, monitoring, polygons, grid, beliefs, pomdp, auth, strategic, kpi, forecast
 from .db.session import init_db, check_connection
 
 # ── Logging setup ──
@@ -63,6 +63,7 @@ app.include_router(pomdp.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(strategic.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
+app.include_router(forecast.router, prefix="/api")
 
 
 @app.on_event("startup")

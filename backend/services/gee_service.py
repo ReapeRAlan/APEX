@@ -269,7 +269,9 @@ class GEEService:
     # Dynamic World — clasificacion land-cover con deep learning
     # ------------------------------------------------------------------
     DW_SCALE = 10  # 10m — resolución nativa de Dynamic World
-    DW_MAX_TILE_PX = 1800  # margen de seguridad bajo el límite de 2048px de computePixels
+    # GEE computePixels limit ~48 MiB → 9 bands × 8 bytes = 72 B/px
+    # max pixels ≈ 48*1024² / 72 ≈ 700k → sqrt ≈ 836 → use 750 for safety
+    DW_MAX_TILE_PX = 750
 
     def get_dynamic_world_classification(
         self, aoi_geojson: dict, start_date: str, end_date: str, job_id: str = "test"
@@ -371,8 +373,32 @@ class GEEService:
             except Exception as e:
                 print(f"[DW] computePixels falló ({e}), fallback a getDownloadURL")
                 shutil.rmtree(tile_dir, ignore_errors=True)
+                tile_dir.mkdir(exist_ok=True)
                 tiles_legacy = self._split_bbox_at_scale(coords, n_bands, self.DW_SCALE)
-                self._download_tile_at_scale(composite, tiles_legacy[0], final_path, self.DW_SCALE)
+                if len(tiles_legacy) == 1:
+                    self._download_tile_at_scale(composite, tiles_legacy[0], final_path, self.DW_SCALE)
+                else:
+                    tile_paths_fb = []
+                    for idx_fb, tl in enumerate(tiles_legacy):
+                        tp_fb = tile_dir / f"tile_fb_{idx_fb}.tif"
+                        self._download_tile_at_scale(composite, tl, tp_fb, self.DW_SCALE)
+                        tile_paths_fb.append(tp_fb)
+                        print(f"[DW-fallback] Tile {idx_fb+1}/{len(tiles_legacy)} descargado")
+                    datasets_fb = [rasterio.open(tp) for tp in tile_paths_fb]
+                    mosaic_fb, out_transform_fb = rio_merge(datasets_fb)
+                    out_meta_fb = datasets_fb[0].meta.copy()
+                    out_meta_fb.update({
+                        "height": mosaic_fb.shape[1],
+                        "width": mosaic_fb.shape[2],
+                        "transform": out_transform_fb,
+                    })
+                    for ds in datasets_fb:
+                        ds.close()
+                    with rasterio.open(final_path, "w", **out_meta_fb) as dest:
+                        dest.write(mosaic_fb)
+                    for tp_fb in tile_paths_fb:
+                        tp_fb.unlink(missing_ok=True)
+                    shutil.rmtree(tile_dir, ignore_errors=True)
         else:
             tile_paths = []
             for i, tile_dict in enumerate(tiles):
@@ -631,6 +657,21 @@ class GEEService:
             raise ValueError(
                 f"Raster descargado ({raster_path.name}) no cubre el AOI - revisar coordenadas"
             )
+
+        # Check coverage fraction (raster bbox vs AOI bbox)
+        aoi_w = max_lon - min_lon
+        aoi_h = max_lat - min_lat
+        raster_w = b.right - b.left
+        raster_h = b.top - b.bottom
+        if aoi_w > 0 and aoi_h > 0:
+            cov = (raster_w * raster_h) / (aoi_w * aoi_h)
+            print(f"[verify-bbox] Cobertura: {cov*100:.1f}% del AOI bbox", flush=True)
+            if cov < 0.7:
+                print(
+                    f"[verify-bbox] ADVERTENCIA - raster cubre solo {cov*100:.1f}% del AOI "
+                    f"(raster {raster_w:.4f}×{raster_h:.4f}° vs AOI {aoi_w:.4f}×{aoi_h:.4f}°)",
+                    flush=True,
+                )
 
         print("[verify-bbox] OK - raster cubre el AOI", flush=True)
         return True

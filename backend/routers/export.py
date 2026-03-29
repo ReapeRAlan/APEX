@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -79,13 +80,23 @@ def _fetch_thumbnails(aoi_geojson: Optional[dict], timeline: dict) -> Tuple[dict
     overview = None
     if not aoi_geojson:
         return thumbnails, overview
-    try:
+
+    def _inner():
         from ..services.gee_thumbnails import GEEThumbnailService
         svc = GEEThumbnailService()
+        th, ov = {}, None
         years = sorted(timeline.keys()) if timeline else []
         if years:
-            thumbnails = svc.fetch_yearly_thumbnails(aoi_geojson, years)
-        overview = svc.fetch_overview_thumbnail(aoi_geojson)
+            th = svc.fetch_yearly_thumbnails(aoi_geojson, years)
+        ov = svc.fetch_overview_thumbnail(aoi_geojson)
+        return th, ov
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_inner)
+            thumbnails, overview = future.result(timeout=30)
+    except FuturesTimeout:
+        log.warning("Thumbnail fetch timed out after 30s — generating report without satellite imagery")
     except Exception as exc:
         log.warning("Thumbnail fetch failed (non-fatal): %s", exc)
     return thumbnails, overview
@@ -151,6 +162,8 @@ async def export_timeline_report(
             "total_deforestacion_ha": cumulative.get("total_deforestation_ha"),
             "total_expansion_urbana_ha": cumulative.get("total_urban_expansion_ha"),
             "cambio_bosque_denso_pct": cumulative.get("bosque_denso_change_pct"),
+            "total_firms_hotspots": cumulative.get("total_firms_hotspots"),
+            "total_frp_mw": cumulative.get("total_frp_mw"),
             "anomalias_detectadas": len(anomalies),
         },
         "alertas": anomalies,
@@ -161,6 +174,7 @@ async def export_timeline_report(
         "alerts_glad_radd": summary.get("alerts"),
         "drivers": summary.get("drivers"),
         "crossval": summary.get("crossval"),
+        "firms_hotspots": summary.get("firms_hotspots"),
         "legal_context": summary.get("legal_context"),
     }
 

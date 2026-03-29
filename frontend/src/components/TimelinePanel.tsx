@@ -247,8 +247,11 @@ export default function TimelinePanel({
           )}
           {(cumulative.total_firms_hotspots ?? 0) > 0 && (
             <div className="bg-[#21262d] rounded p-2 border border-[#30363d]">
-              <p className="text-[9px] text-[#8b949e] uppercase tracking-wide">FIRMS hotspots</p>
+              <p className="text-[9px] text-[#8b949e] uppercase tracking-wide">🔥 FIRMS hotspots</p>
               <p className="text-base font-bold" style={{ color: "#ff3b30" }}>{cumulative.total_firms_hotspots}</p>
+              {(cumulative as any).total_frp_mw > 0 && (
+                <p className="text-[9px] text-[#8b949e]">FRP total: {(cumulative as any).total_frp_mw} MW</p>
+              )}
             </div>
           )}
           {(cumulative.total_sar_change_ha ?? 0) > 0 && (
@@ -310,6 +313,8 @@ export default function TimelinePanel({
             dot={{ r: 2, fill: "#facc15" }} yAxisId={1} strokeDasharray="4 2" />
           <Line type="monotone" dataKey="sar_ha" stroke="#06b6d4" strokeWidth={1.5}
             dot={{ r: 2, fill: "#06b6d4" }} yAxisId={1} strokeDasharray="2 2" />
+          <Line type="monotone" dataKey="firms_hotspots" stroke="#ff3b30" strokeWidth={2}
+            dot={{ r: 3, fill: "#ff3b30" }} yAxisId={1} />
         </ComposedChart>
       </ResponsiveContainer>
 
@@ -327,6 +332,7 @@ export default function TimelinePanel({
           { color: "#fb923c", label: "Incendios" },
           { color: "#facc15", label: "Hansen" },
           { color: "#06b6d4", label: "SAR" },
+          { color: "#ff3b30", label: "FIRMS" },
         ].map(({ color, label }) => (
           <div key={label} className="flex items-center gap-1">
             <span className="w-3 h-0.5 rounded" style={{ backgroundColor: color }} />
@@ -401,11 +407,56 @@ export default function TimelinePanel({
             </div>
           )}
           {sel.firms_hotspots && (
-            <div className="rounded p-2" style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}` }}>
-              <p className="text-[10px]" style={{ color: C.text2 }}>FIRMS hotspots</p>
-              <p className="text-sm font-bold" style={{ color: "#ff3b30" }}>
-                {sel.firms_hotspots?.stats?.hotspot_count ?? 0}
-              </p>
+            <div className="rounded p-2 col-span-2" style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}` }}>
+              <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: "#ff3b30" }}>🔥 FIRMS hotspots</p>
+              <div className="grid grid-cols-3 gap-x-2 gap-y-1 mt-1">
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>Detecciones</p>
+                  <p className="text-sm font-bold" style={{ color: "#ff3b30" }}>
+                    {sel.firms_hotspots?.stats?.hotspot_count ?? 0}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>Alta confianza</p>
+                  <p className="text-sm font-bold" style={{ color: "#ff6b6b" }}>
+                    {sel.firms_hotspots?.stats?.high_confidence_count ?? 0}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>Clusters</p>
+                  <p className="text-sm font-bold" style={{ color: "#ff9500" }}>
+                    {sel.firms_hotspots?.stats?.cluster_count ?? 0}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>FRP total (MW)</p>
+                  <p className="text-sm font-bold" style={{ color: "#ffcc00" }}>
+                    {sel.firms_hotspots?.stats?.total_frp_mw ?? 0}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>FRP prom.</p>
+                  <p className="text-sm font-bold" style={{ color: "#ffcc00" }}>
+                    {sel.firms_hotspots?.stats?.avg_frp_mw ?? 0}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px]" style={{ color: C.text2 }}>FRP max</p>
+                  <p className="text-sm font-bold" style={{ color: "#ffcc00" }}>
+                    {sel.firms_hotspots?.stats?.max_frp_mw ?? 0}
+                  </p>
+                </div>
+              </div>
+              {sel.firms_hotspots?.stats?.satellites?.length > 0 && (
+                <p className="text-[9px] mt-1" style={{ color: C.text2 }}>
+                  Sat: {sel.firms_hotspots.stats.satellites.join(", ")}
+                </p>
+              )}
+              {sel.firms_hotspots?.stats?.date_range && (
+                <p className="text-[9px]" style={{ color: C.text2 }}>
+                  {sel.firms_hotspots.stats.date_range}
+                </p>
+              )}
             </div>
           )}
           {sel.sar && (

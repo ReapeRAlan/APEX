@@ -1109,6 +1109,73 @@ class APEXPDFReportGenerator:
         ))
         return story
 
+    # ── 1g. FIRMS Hotspots section (PDF) ──
+    def _build_firms_section(self, summary: dict) -> list:
+        """Sección de puntos de calor FIRMS — PDF."""
+        # Aggregate FIRMS from timeline per-year data
+        timeline = summary.get("timeline", {})
+        cumulative = summary.get("cumulative", {})
+        total_hotspots = cumulative.get("total_firms_hotspots", 0)
+        total_frp = _to_float(cumulative.get("total_frp_mw", 0))
+
+        if total_hotspots == 0:
+            return []
+
+        story: list = []
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Puntos de Calor FIRMS (VIIRS / MODIS NRT)", self.styles["SectionHead"]))
+
+        story.append(Paragraph(
+            f"Se identificaron <b>{total_hotspots}</b> detecciones de puntos de calor activos "
+            f"en el área de estudio durante el período analizado, con una potencia radiativa "
+            f"total de <b>{total_frp:,.1f} MW</b> (Fire Radiative Power). "
+            f"Los datos provienen del sistema NASA FIRMS con sensores VIIRS (375 m) y MODIS (1 km).",
+            self.styles["Body"],
+        ))
+
+        # Per-year table
+        table_data = [["Año", "Hotspots", "Alta conf.", "Clusters", "FRP total (MW)", "FRP máx (MW)", "Satélites"]]
+        for yr in sorted(timeline.keys()):
+            yr_firms = timeline[yr].get("firms_hotspots", {}).get("stats", {})
+            hc = yr_firms.get("hotspot_count", 0)
+            if hc == 0:
+                continue
+            hi = yr_firms.get("high_confidence_count", 0)
+            cl = yr_firms.get("cluster_count", 0)
+            frp_t = yr_firms.get("total_frp_mw", 0)
+            frp_m = yr_firms.get("max_frp_mw", 0)
+            sats = ", ".join(yr_firms.get("satellites", []))
+            table_data.append([str(yr), str(hc), str(hi), str(cl),
+                               f"{frp_t:,.1f}", f"{frp_m:,.1f}", sats])
+
+        if len(table_data) > 1:
+            story.append(Spacer(1, 0.1 * inch))
+            col_w = [0.6 * inch, 0.7 * inch, 0.7 * inch, 0.7 * inch, 1.0 * inch, 1.0 * inch, 1.3 * inch]
+            t = Table(table_data, colWidths=col_w, repeatRows=1)
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTSIZE", (0, 0), (-1, 0), 7),
+                ("FONTSIZE", (0, 1), (-1, -1), 6.5),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8f8f8"), colors.white]),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ]))
+            story.append(t)
+
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(
+            "<b>FRP (Fire Radiative Power)</b>: Potencia radiativa del fuego medida en megawatts. "
+            "Valores altos indican mayor intensidad de quema y potencial de daño.",
+            self.styles["BodySmall"],
+        ))
+        story.append(Paragraph(
+            "Fuente: NASA FIRMS — VIIRS (S-NPP, NOAA-20) 375 m / MODIS (Terra, Aqua) 1 km, datos NRT + archivo",
+            self.styles["Small"],
+        ))
+        return story
+
     # ── 2. Alerts ──
     def _build_alerts(self, anomalies: list) -> list:
         story: list = []
@@ -1371,6 +1438,10 @@ class APEXPDFReportGenerator:
             "cultivo rotacional, tala, incendios, asentamientos e infraestructura.",
             "<b>Incendios (MODIS MCD64A1):</b> Áreas quemadas detectadas por MODIS a resolución 500m. "
             "Se correlaciona con polígonos de deforestación para identificar causalidad.",
+            "<b>Puntos de Calor FIRMS:</b> Detecciones de fuego activo en tiempo casi real del sistema "
+            "NASA FIRMS con sensores VIIRS (375 m, satélites S-NPP y NOAA-20) y MODIS (1 km, Terra y Aqua). "
+            "Se reporta FRP (Fire Radiative Power) en megawatts como indicador de intensidad. "
+            "Datos locales indexados desde 2018 con respaldo de API en línea.",
             "<b>Contexto Legal (WDPA):</b> Intersección del AOI con Áreas Naturales Protegidas (ANPs) "
             "de la CONANP/WDPA. La deforestación dentro de una ANP constituye infracción potencial "
             "bajo el Artículo 47 de la LGEEPA.",
@@ -1437,6 +1508,7 @@ class APEXPDFReportGenerator:
         story += self._build_deforestation_alerts_section(summary)
         story += self._build_sar_section(summary)
         story += self._build_crossval_section(summary)
+        story += self._build_firms_section(summary)
         story += self._build_alerts(anomalies)
         if timeline:
             story += self._build_annual_data(timeline)
@@ -1951,6 +2023,68 @@ class APEXWordReportGenerator:
         source_p.add_run("Fuente: MapBiomas México v1.0 (resolución 30 m)")
         doc.add_paragraph("")
 
+    def _add_firms_section(self, doc: Document, summary: dict):
+        """Sección de puntos de calor FIRMS — Word."""
+        timeline = summary.get("timeline", {})
+        cumulative = summary.get("cumulative", {})
+        total_hotspots = cumulative.get("total_firms_hotspots", 0)
+        total_frp = _to_float(cumulative.get("total_frp_mw", 0))
+
+        if total_hotspots == 0:
+            return
+
+        doc.add_paragraph("Puntos de Calor FIRMS (VIIRS / MODIS NRT)", style="APEXHeading")
+
+        p = doc.add_paragraph(style="APEXBody")
+        p.add_run(
+            f"Se identificaron {total_hotspots} detecciones de puntos de calor activos "
+            f"en el área de estudio durante el período analizado, con una potencia radiativa "
+            f"total de {total_frp:,.1f} MW (Fire Radiative Power). "
+            f"Los datos provienen del sistema NASA FIRMS con sensores VIIRS (375 m) y MODIS (1 km)."
+        )
+
+        # Per-year table
+        headers = ["Año", "Hotspots", "Alta conf.", "Clusters", "FRP total (MW)", "FRP máx (MW)", "Satélites"]
+        rows_data = []
+        for yr in sorted(timeline.keys()):
+            yr_firms = timeline[yr].get("firms_hotspots", {}).get("stats", {})
+            hc = yr_firms.get("hotspot_count", 0)
+            if hc == 0:
+                continue
+            hi = yr_firms.get("high_confidence_count", 0)
+            cl = yr_firms.get("cluster_count", 0)
+            frp_t = yr_firms.get("total_frp_mw", 0)
+            frp_m = yr_firms.get("max_frp_mw", 0)
+            sats = ", ".join(yr_firms.get("satellites", []))
+            rows_data.append([str(yr), str(hc), str(hi), str(cl),
+                              f"{frp_t:,.1f}", f"{frp_m:,.1f}", sats])
+
+        if rows_data:
+            t = doc.add_table(rows=len(rows_data) + 1, cols=len(headers))
+            t.style = "Light Grid Accent 1"
+            for ci, h in enumerate(headers):
+                t.rows[0].cells[ci].text = h
+                for paragraph in t.rows[0].cells[ci].paragraphs:
+                    for run in paragraph.runs:
+                        run.bold = True
+            for ri, row in enumerate(rows_data, 1):
+                for ci, val in enumerate(row):
+                    t.rows[ri].cells[ci].text = val
+
+        doc.add_paragraph("")
+        note = doc.add_paragraph(style="APEXSmall")
+        run = note.add_run(
+            "FRP (Fire Radiative Power): Potencia radiativa del fuego medida en megawatts. "
+            "Valores altos indican mayor intensidad de quema y potencial de daño."
+        )
+        run.italic = True
+        source_p = doc.add_paragraph(style="APEXSmall")
+        source_p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        source_p.add_run(
+            "Fuente: NASA FIRMS — VIIRS (S-NPP, NOAA-20) 375 m / MODIS (Terra, Aqua) 1 km, datos NRT + archivo"
+        )
+        doc.add_paragraph("")
+
     def _add_alerts(self, doc: Document, anomalies: list):
         doc.add_paragraph("2. Alertas y Anomalías", style="APEXHeading")
         if not anomalies:
@@ -2149,6 +2283,10 @@ class APEXWordReportGenerator:
             "cultivo rotacional, tala, incendios, asentamientos e infraestructura.",
             "Incendios (MODIS MCD64A1): Áreas quemadas detectadas por MODIS a resolución 500m. "
             "Se correlaciona con polígonos de deforestación para identificar causalidad.",
+            "Puntos de Calor FIRMS: Detecciones de fuego activo en tiempo casi real del sistema "
+            "NASA FIRMS con sensores VIIRS (375 m, satélites S-NPP y NOAA-20) y MODIS (1 km, Terra y Aqua). "
+            "Se reporta FRP (Fire Radiative Power) en megawatts como indicador de intensidad. "
+            "Datos locales indexados desde 2018 con respaldo de API en línea.",
             "Contexto Legal (WDPA): Intersección del AOI con Áreas Naturales Protegidas (ANPs) "
             "de la CONANP/WDPA. La deforestación dentro de una ANP constituye infracción potencial "
             "bajo el Artículo 47 de la LGEEPA.",
@@ -2207,6 +2345,7 @@ class APEXWordReportGenerator:
         self._add_deforestation_alerts_section(doc, summary)
         self._add_sar_section(doc, summary)
         self._add_crossval_section(doc, summary)
+        self._add_firms_section(doc, summary)
         self._add_alerts(doc, anomalies)
         if timeline:
             self._add_annual_data(doc, timeline)

@@ -59,9 +59,12 @@ def init_db():
 def _migrate_sqlite():
     """Add columns that may be missing from older SQLite schemas."""
     migrations = [
-        ("analysis_results", "created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ("analysis_results", "created_at", "DATETIME DEFAULT NULL"),
         ("analysis_results", "validated", "BOOLEAN DEFAULT NULL"),
+        ("analysis_results", "updated_at", "DATETIME DEFAULT NULL"),
         ("jobs", "updated_at", "DATETIME DEFAULT NULL"),
+        ("jobs", "logs", "TEXT"),
+        ("jobs", "notify_email", "TEXT DEFAULT NULL"),
     ]
     with engine.connect() as conn:
         for table, column, col_type in migrations:

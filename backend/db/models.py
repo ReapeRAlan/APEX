@@ -142,6 +142,33 @@ class BeliefState(Base):
     source_motors = Column(Text, nullable=True)  # JSON: which motors contributed
 
 
+# ── Phase 2.5: Forecast Time-Series ──
+
+class CellTimeSeries(Base):
+    """Per-cell per-year feature vector for forecast engine."""
+    __tablename__ = "cell_timeseries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    h3_index = Column(String(15), ForeignKey("grid_cells.h3_index"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    deforestation_ha = Column(Float, default=0.0)
+    urban_expansion_ha = Column(Float, default=0.0)
+    vegetation_class = Column(String, nullable=True)
+    hansen_loss_ha = Column(Float, default=0.0)
+    sar_change_db = Column(Float, default=0.0)
+    p_ilicito = Column(Float, default=0.15)
+    ic_score = Column(Float, default=0.5)
+    driver_type = Column(String, nullable=True)
+    fire_count = Column(Integer, default=0)
+    ccdc_breakpoints = Column(Integer, default=0)
+    job_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("idx_cts_h3_year", "h3_index", "year", unique=True),
+    )
+
+
 # ── Phase 3.5: Auth ──
 
 class User(Base):

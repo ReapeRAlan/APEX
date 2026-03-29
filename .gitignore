@@ -68,3 +68,8 @@ e2e_output.txt
 e2e_results.json
 e2e_timeline_results.json
 test_report.json
+
+LocalData/
+*.db
+openapi_temp.json
+

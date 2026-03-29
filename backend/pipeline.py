@@ -902,7 +902,8 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             except Exception as e:
                 job_log(job_id, f"[{jid}] ⚠ GEE SAR init failed: {e}")
 
-        sorted_years = sorted(rasters_dw.keys()) if needs_dw else list(range(start_year, end_year + 1))
+        # Use all requested years — DW-dependent engines check rasters_dw availability per year
+        sorted_years = list(range(start_year, end_year + 1))
         for i, year in enumerate(sorted_years):
             pct = int(35 + (i / len(sorted_years)) * 55)
             update_job_status(job_id, "running", pct,
@@ -1000,14 +1001,14 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                 except Exception as e:
                     job_log(job_id, f"[{jid}] {year} ⚠ Alerts error: {e}")
 
-            # ── MODIS Fire / Burned Area (full year — fires happen year-round) ──
+            # ── MODIS Fire / Burned Area (full year) ──
             if "fire" in engines and _alerts_svc:
+                fire_ys = f"{year}-01-01"
+                fire_ye = f"{year}-12-31"
                 update_job_status(job_id, "running", pct, f"{year} — Analizando incendios MODIS...")
                 try:
-                    fire_year_start = f"{year}-01-01"
-                    fire_year_end = f"{year}-12-31"
                     fire_path = _alerts_svc.get_modis_burned_area(
-                        aoi, fire_year_start, fire_year_end,
+                        aoi, fire_ys, fire_ye,
                         job_id=f"{job_id}_fire_{year}"
                     )
                     fire_eng = FireEngine()
@@ -1015,7 +1016,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                     burned_ha = fire_stats.get('total_burned_ha', 0)
                     if fire_geo.get("features"):
                         year_result["fire"] = {"geojson": fire_geo, "stats": fire_stats}
-                    job_log(job_id, f"[{jid}] {year} Incendios MODIS (año completo): {burned_ha:.1f} ha, {fire_stats.get('fire_count',0)} zonas")
+                    job_log(job_id, f"[{jid}] {year} Incendios MODIS ({fire_ys}→{fire_ye}): {burned_ha:.1f} ha, {fire_stats.get('fire_count',0)} zonas")
                 except Exception as e:
                     job_log(job_id, f"[{jid}] {year} ⚠ Fire error: {e}")
 
@@ -1045,13 +1046,13 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             # ── Structures — motor deshabilitado (requiere <1m/px, S2=10m) ──
             # Se omite en timeline para evitar descarga S2 innecesaria
 
-            # ── NASA FIRMS Hotspots (full year — fire detections year-round) ──
+            # ── NASA FIRMS Hotspots (full year — fires happen year-round) ──
             if "firms_hotspots" in engines:
+                firms_ys = f"{year}-01-01"
+                firms_ye = f"{year}-12-31"
                 update_job_status(job_id, "running", pct, f"{year} — Consultando FIRMS hotspots...")
                 try:
-                    firms_year_start = f"{year}-01-01"
-                    firms_year_end = f"{year}-12-31"
-                    rows = fetch_hotspots_for_aoi(aoi, firms_year_start, firms_year_end)
+                    rows = fetch_hotspots_for_aoi(aoi, firms_ys, firms_ye)
                     if rows:
                         firms_eng = FIRMSEngine()
                         firms_geo, firms_stats = firms_eng.process_detections(rows)
@@ -1060,7 +1061,9 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                             firms_stats["cluster_count"] = len(clusters)
                             firms_geo["features"].extend(clusters)
                         year_result["firms_hotspots"] = {"geojson": firms_geo, "stats": firms_stats}
-                    job_log(job_id, f"[{jid}] {year} FIRMS (año completo): {len(rows)} hotspots")
+                    else:
+                        year_result["firms_hotspots"] = {"geojson": {"type": "FeatureCollection", "features": []}, "stats": {"hotspot_count": 0, "high_confidence_count": 0, "total_frp_mw": 0, "avg_frp_mw": 0, "max_frp_mw": 0}}
+                    job_log(job_id, f"[{jid}] {year} FIRMS ({firms_ys}→{firms_ye}): {len(rows)} hotspots")
                 except Exception as e:
                     job_log(job_id, f"[{jid}] {year} ⚠ FIRMS error: {e}")
 
@@ -1074,6 +1077,8 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
         # ── Cumulative stats ──
         all_years_sorted = sorted(int(k) for k in timeline_results.keys())
+        if not all_years_sorted:
+            all_years_sorted = list(range(year_start, year_end + 1))
         total_def_ha = sum(
             v.get("deforestation", {}).get("stats", {}).get("area_ha", 0)
             for v in timeline_results.values()
@@ -1090,6 +1095,10 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             v.get("firms_hotspots", {}).get("stats", {}).get("hotspot_count", 0)
             for v in timeline_results.values()
         )
+        total_frp_mw = round(sum(
+            v.get("firms_hotspots", {}).get("stats", {}).get("total_frp_mw", 0)
+            for v in timeline_results.values()
+        ), 1)
         total_hansen_ha_timeline = sum(
             v.get("hansen", {}).get("stats", {}).get("loss_ha", 0)
             for v in timeline_results.values()
@@ -1115,6 +1124,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             "total_urban_expansion_ha": round(total_ue_ha, 1),
             "total_burned_ha": round(total_burned_ha, 1),
             "total_firms_hotspots": total_firms_hotspots,
+            "total_frp_mw": total_frp_mw,
             "total_hansen_loss_ha": round(total_hansen_ha_timeline, 1),
             "total_sar_change_ha": round(total_sar_ha, 1),
             "total_alerts": total_alerts_count,

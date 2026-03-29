@@ -1,8 +1,12 @@
 """
 NASA FIRMS Active Fire / Hotspot Service for APEX.
 
-Queries the FIRMS REST API for active fire detections (VIIRS & MODIS)
-within a given AOI and date range.
+Queries local indexed data (SQLite) or the FIRMS REST API for active
+fire detections (VIIRS & MODIS) within a given AOI and date range.
+
+Data source priority:
+  1. Local SQLite index (APEX/LocalData/firms_index.sqlite) — sub-second
+  2. FIRMS REST API — slow (~20s per 5-day batch) but always up-to-date
 
 Key design decisions (adapted from MACOF's proven firms.py):
   - NRT sources (*_NRT) → only last ~7 days from today
@@ -40,6 +44,14 @@ NRT_SOURCES = ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT"]
 # SP (Standard Processing) sources — historical archive
 SP_SOURCES = ["VIIRS_SNPP_SP", "VIIRS_NOAA20_SP", "MODIS_SP"]
 
+# Known data availability per SP source (from /api/data_availability endpoint)
+# Updated 2025-03. NRT sources always cover "recent" dates so no min needed.
+SP_SOURCE_MIN_DATE = {
+    "MODIS_SP": datetime(2000, 11, 1),
+    "VIIRS_SNPP_SP": datetime(2012, 1, 20),
+    "VIIRS_NOAA20_SP": datetime(2018, 4, 1),
+}
+
 # How many days back NRT data is typically available
 NRT_MAX_AGE_DAYS = 7
 
@@ -53,6 +65,13 @@ MAX_API_REQUESTS = 30
 
 # For full-year timeline queries: 365/5 = 73 batches per source
 MAX_API_REQUESTS_TIMELINE = 80
+
+# Per-request timeout (seconds)
+_FIRMS_REQUEST_TIMEOUT = 15
+
+# Max total wall-clock time for the entire fetch_hotspots_for_aoi call (seconds)
+# ~18 batches for a 90-day season × ~20s each ≈ 6 min; allow 5 min (300s)
+_FIRMS_TOTAL_TIMEOUT = 300
 
 
 def _get_map_key() -> str:
@@ -90,10 +109,11 @@ def _parse_csv(text: str) -> list[dict]:
     return rows
 
 
-def _select_sources(date_end: datetime, total_days: int = 10) -> list[str]:
+def _select_sources(date_end: datetime, total_days: int = 10, date_start: Optional[datetime] = None) -> list[str]:
     """Auto-select NRT or SP sources based on how recent the end date is.
     
     For large date ranges (>60 days), use fewer sources to stay within API limits.
+    Filters out SP sources whose data starts after the requested date range.
     """
     now = datetime.utcnow()
     days_ago = (now - date_end).days
@@ -105,27 +125,36 @@ def _select_sources(date_end: datetime, total_days: int = 10) -> list[str]:
         # For large ranges (e.g. full year), pick fewer sources to stay within API limits
         # SP sources: max 5 days per request
         # 365 days / 5 days per batch = 73 batches; cap=80 allows 1 source
-        if total_days > 180:
-            # Full year: VIIRS_SNPP_SP (best coverage from 2012)
-            sources = ["VIIRS_SNPP_SP"]
-            logger.info(
-                "[FIRMS] Rango anual (%d dias, %d dias atras) → usando %s (SP max=5d/req)",
-                total_days, days_ago, sources,
-            )
-        elif total_days > 60:
-            # Medium range: VIIRS_SNPP_SP (73 batches would exceed cap with 2 sources)
-            sources = ["VIIRS_SNPP_SP"]
-            logger.info(
-                "[FIRMS] Rango medio (%d dias, %d dias atras) → usando %s",
-                total_days, days_ago, sources,
-            )
+        if total_days > 60:
+            # Prefer VIIRS_SNPP_SP (good coverage from 2012), fallback to MODIS_SP
+            candidates = ["VIIRS_SNPP_SP", "MODIS_SP"]
         else:
             # Short range: 2 SP sources fit within cap
-            sources = ["VIIRS_SNPP_SP", "MODIS_SP"]
-            logger.info(
-                "[FIRMS] Fechas historicas (%d dias atras, %d dias) → usando %s",
-                days_ago, total_days, sources,
-            )
+            candidates = ["VIIRS_SNPP_SP", "MODIS_SP"]
+
+        # Filter out sources that don't cover the requested start date
+        if date_start:
+            sources = []
+            for s in candidates:
+                min_dt = SP_SOURCE_MIN_DATE.get(s)
+                if min_dt and date_start < min_dt:
+                    logger.info(
+                        "[FIRMS] Omitiendo %s — datos desde %s, pedido desde %s",
+                        s, min_dt.strftime("%Y-%m-%d"), date_start.strftime("%Y-%m-%d"),
+                    )
+                    continue
+                sources.append(s)
+            # If all filtered out, fall back to MODIS_SP (longest history: 2000)
+            if not sources:
+                sources = ["MODIS_SP"]
+                logger.info("[FIRMS] Todas las fuentes filtradas, usando fallback MODIS_SP")
+        else:
+            sources = candidates[:1] if total_days > 60 else candidates
+
+        logger.info(
+            "[FIRMS] %d dias, %d dias atras → usando %s",
+            total_days, days_ago, sources,
+        )
         return sources
 
 
@@ -142,7 +171,7 @@ def _fetch_single(
         url += f"/{date_str}"
 
     try:
-        resp = requests.get(url, timeout=45)
+        resp = requests.get(url, timeout=_FIRMS_REQUEST_TIMEOUT)
 
         if resp.status_code == 400:
             # 400 = Bad Request — typically means source doesn't cover this date
@@ -226,8 +255,8 @@ def fetch_hotspots_for_aoi(
     """
     Fetch FIRMS hotspots for a GeoJSON AOI geometry within a date range.
 
-    Automatically selects NRT vs SP sources based on date recency.
-    Batches requests in 5-day windows (SP) or 10-day (NRT) with a request cap.
+    Uses local SQLite index when available (sub-second queries).
+    Falls back to FIRMS REST API when local data doesn't cover the range.
 
     Args:
         aoi_geojson: GeoJSON geometry (Polygon or MultiPolygon)
@@ -238,6 +267,8 @@ def fetch_hotspots_for_aoi(
     Returns:
         List of detection dicts filtered to the AOI polygon interior.
     """
+    from .firms_local import local_db_ready, query_local, get_date_range
+
     aoi_shape = shape(aoi_geojson)
     bounds = aoi_shape.bounds  # (minx, miny, maxx, maxy)
     bbox = (bounds[0] - 0.01, bounds[1] - 0.01, bounds[2] + 0.01, bounds[3] + 0.01)
@@ -255,56 +286,49 @@ def fetch_hotspots_for_aoi(
         logger.warning("[FIRMS] Rango de fechas vacío o invertido")
         return []
 
-    # Auto-select sources if not specified
-    if sources is None:
-        sources = _select_sources(d_end, total_days)
-    logger.info(
-        "[FIRMS] Consultando %s → %s (%d dias) con fuentes: %s",
-        date_start, date_end, total_days, sources,
-    )
-
-    # For large ranges, use higher API cap
-    request_cap = MAX_API_REQUESTS_TIMELINE if total_days > 60 else MAX_API_REQUESTS
-
-    # Determine batch size: SP sources max 5 days, NRT max 10
-    is_sp = any(s.endswith("_SP") for s in sources)
-    batch_days = MAX_DAYS_SP if is_sp else MAX_DAYS_NRT
-
-    all_rows: list[dict] = []
-    api_calls = 0
-
-    if total_days <= batch_days:
-        all_rows = fetch_hotspots_for_bbox(
-            bbox, sources=sources, day_range=total_days, date=date_end
-        )
-        api_calls += len(sources)
-    else:
-        cursor = d_end
-        remaining = total_days
-        while remaining > 0 and api_calls < request_cap:
-            chunk = min(remaining, batch_days)
-            rows = fetch_hotspots_for_bbox(
-                bbox, sources=sources, day_range=chunk,
-                date=cursor.strftime("%Y-%m-%d"),
-            )
-            all_rows.extend(rows)
-            api_calls += len(sources)
-            cursor -= timedelta(days=chunk)
-            remaining -= chunk
-            # Throttle to avoid FIRMS "Exceeding allowed transaction limit"
-            if remaining > 0:
-                time.sleep(0.5)
-
-        if remaining > 0:
-            logger.warning(
-                "[FIRMS] Limite de peticiones alcanzado (%d/%d). "
-                "Quedan %d dias sin consultar. "
-                "Considere reducir el rango de fechas.",
-                api_calls, request_cap, remaining,
+    # ── Try local data first ──
+    # Strategy: always query local DB (it returns only what it has).
+    # Only use API for dates AFTER local coverage ends (e.g. very recent NRT).
+    # Dates BEFORE local coverage start (e.g. pre-April 2018) are accepted
+    # as "no data" — the API is too slow to query for typically-empty results.
+    if local_db_ready():
+        local_range = get_date_range()
+        if local_range:
+            local_min, local_max = local_range
+            logger.info(
+                "[FIRMS] Datos locales disponibles: %s → %s", local_min, local_max,
             )
 
-    logger.info("[FIRMS] Total respuestas API: %d llamadas, %d filas brutas", api_calls, len(all_rows))
+            # Query local DB for whatever it has in the requested range
+            local_rows = query_local(bbox, date_start, date_end)
 
+            # If requested end date is beyond local max, supplement with API
+            if date_end > local_max:
+                api_start = (datetime.strptime(local_max, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                logger.info(
+                    "[FIRMS] Suplementando con API: %s → %s (post datos locales)",
+                    api_start, date_end,
+                )
+                d_api_start = datetime.strptime(api_start, "%Y-%m-%d")
+                api_rows = _fetch_from_api(
+                    aoi_shape, bbox, api_start, date_end, d_api_start, d_end, sources,
+                )
+                local_rows.extend(api_rows)
+            else:
+                logger.info(
+                    "[FIRMS] Rango completo cubierto por datos locales (%s→%s)",
+                    date_start, date_end,
+                )
+
+            return _filter_and_dedup(local_rows, aoi_shape)
+
+    # ── No local data — use API ──
+    all_rows = _fetch_from_api(aoi_shape, bbox, date_start, date_end, d_start, d_end, sources)
+    return _filter_and_dedup(all_rows, aoi_shape)
+
+
+def _filter_and_dedup(all_rows: list[dict], aoi_shape) -> list[dict]:
+    """Filter points inside AOI polygon and deduplicate."""
     # Filter points inside the AOI polygon
     filtered = []
     for row in all_rows:
@@ -334,3 +358,78 @@ def fetch_hotspots_for_aoi(
         len(all_rows), len(filtered), len(unique),
     )
     return unique
+
+
+def _fetch_from_api(
+    aoi_shape,
+    bbox: tuple[float, float, float, float],
+    date_start: str,
+    date_end: str,
+    d_start: datetime,
+    d_end: datetime,
+    sources: Optional[list[str]] = None,
+) -> list[dict]:
+    """Fetch hotspots from the FIRMS REST API (slow path)."""
+    total_days = (d_end - d_start).days + 1
+    if total_days <= 0:
+        return []
+
+    # Auto-select sources if not specified
+    if sources is None:
+        sources = _select_sources(d_end, total_days, date_start=d_start)
+    logger.info(
+        "[FIRMS-API] Consultando %s → %s (%d dias) con fuentes: %s",
+        date_start, date_end, total_days, sources,
+    )
+
+    # For large ranges, use higher API cap
+    request_cap = MAX_API_REQUESTS_TIMELINE if total_days > 60 else MAX_API_REQUESTS
+
+    # Determine batch size: SP sources max 5 days, NRT max 10
+    is_sp = any(s.endswith("_SP") for s in sources)
+    batch_days = MAX_DAYS_SP if is_sp else MAX_DAYS_NRT
+
+    all_rows: list[dict] = []
+    api_calls = 0
+    wall_start = time.monotonic()
+
+    if total_days <= batch_days:
+        all_rows = fetch_hotspots_for_bbox(
+            bbox, sources=sources, day_range=total_days, date=date_end
+        )
+        api_calls += len(sources)
+    else:
+        cursor = d_end
+        remaining = total_days
+        while remaining > 0 and api_calls < request_cap:
+            # Abort if total wall-clock time exceeded
+            if time.monotonic() - wall_start > _FIRMS_TOTAL_TIMEOUT:
+                logger.warning(
+                    "[FIRMS-API] Timeout global alcanzado (%.0fs). "
+                    "Quedan %d dias sin consultar.",
+                    _FIRMS_TOTAL_TIMEOUT, remaining,
+                )
+                break
+            chunk = min(remaining, batch_days)
+            rows = fetch_hotspots_for_bbox(
+                bbox, sources=sources, day_range=chunk,
+                date=cursor.strftime("%Y-%m-%d"),
+            )
+            all_rows.extend(rows)
+            api_calls += len(sources)
+            cursor -= timedelta(days=chunk)
+            remaining -= chunk
+            # Throttle to avoid FIRMS "Exceeding allowed transaction limit"
+            if remaining > 0:
+                time.sleep(0.5)
+
+        if remaining > 0 and time.monotonic() - wall_start <= _FIRMS_TOTAL_TIMEOUT:
+            logger.warning(
+                "[FIRMS-API] Limite de peticiones alcanzado (%d/%d). "
+                "Quedan %d dias sin consultar. "
+                "Considere reducir el rango de fechas.",
+                api_calls, request_cap, remaining,
+            )
+
+    logger.info("[FIRMS-API] Total: %d llamadas, %d filas brutas", api_calls, len(all_rows))
+    return all_rows
