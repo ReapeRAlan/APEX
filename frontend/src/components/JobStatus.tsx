@@ -7,15 +7,22 @@ export default function JobStatus({ jobId, onCompleted }: { jobId: string; onCom
   const [step, setStep] = useState("Iniciando...")
   const [lastLog, setLastLog] = useState("")
   const [groupInfo, setGroupInfo] = useState<{ current: number; total: number } | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const [logCount, setLogCount] = useState(0)
   const seenRef = useRef(0)
+  const startRef = useRef(Date.now())
 
   useEffect(() => {
     if (!jobId) return
     seenRef.current = 0
+    startRef.current = Date.now()
     setGroupInfo(null)
-    console.log(`%c[APEX] 🔄 Polling job ${jobId.slice(0, 8)}…`, "color: #60a5fa")
+    setElapsed(0)
+    setLogCount(0)
+    console.log(`%c[APEX] Polling job ${jobId.slice(0, 8)}…`, "color: #60a5fa")
     const interval = setInterval(async () => {
       try {
+        setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
         const r = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`)
         const d = await r.json()
         setStatus(d.status)
@@ -43,6 +50,7 @@ export default function JobStatus({ jobId, onCompleted }: { jobId: string; onCom
         }
         if (logs.length > seenRef.current) {
           setLastLog(logs[logs.length - 1])
+          setLogCount(logs.length)
         }
         seenRef.current = logs.length
 
@@ -63,14 +71,18 @@ export default function JobStatus({ jobId, onCompleted }: { jobId: string; onCom
   }, [jobId])
 
   const color = status === "failed" ? "bg-red-500" : status === "completed" ? "bg-green-500" : "bg-blue-500"
+  const fmtElapsed = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`
 
   return (
     <div className="mt-3 border-t border-gray-700 pt-2">
       <div className="flex items-center gap-2 mb-1">
         {status !== "completed" && status !== "failed" && (
-          <div className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+          <div className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin flex-shrink-0" />
         )}
-        <span className="text-xs text-gray-300 truncate">{step}</span>
+        {status === "completed" && <span className="text-green-400 text-xs flex-shrink-0">✓</span>}
+        {status === "failed" && <span className="text-red-400 text-xs flex-shrink-0">✗</span>}
+        <span className="text-xs text-gray-300 truncate flex-1">{step}</span>
+        <span className="text-[10px] text-gray-500 flex-shrink-0 tabular-nums">{fmtElapsed}</span>
       </div>
       <div className="w-full bg-gray-700 rounded-full h-2">
         <div className={`${color} h-2 rounded-full transition-all duration-500`} style={{ width: `${progress}%` }} />
@@ -89,8 +101,8 @@ export default function JobStatus({ jobId, onCompleted }: { jobId: string; onCom
         </div>
       )}
       <div className="flex justify-between mt-0.5">
-        <p className="text-xs text-gray-500 truncate max-w-[80%]">{lastLog}</p>
-        <p className="text-xs text-gray-400">{progress}%</p>
+        <p className="text-[10px] text-gray-500 truncate max-w-[70%]">{lastLog}</p>
+        <p className="text-[10px] text-gray-400 tabular-nums">{progress}% · {logCount} logs</p>
       </div>
       {status === "failed" && <p className="text-xs text-red-400 mt-1">Error en el analisis</p>}
     </div>

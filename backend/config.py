@@ -46,4 +46,7 @@ class Settings:
     # MLflow
     MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
+    # HuggingFace
+    HF_TOKEN = os.getenv("HF_TOKEN", "")
+
 settings = Settings()

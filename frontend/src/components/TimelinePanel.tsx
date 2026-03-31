@@ -23,7 +23,7 @@ const VEG_LABELS: Record<string, string> = {
   deforestation_ha: "Deforestacion (ha)", urban_expansion_ha: "Expansion (ha)",
   burned_ha: "Incendios (ha)", hansen_ha: "Hansen (ha)",
   firms_hotspots: "FIRMS hotspots", sar_ha: "SAR cambio (ha)",
-  alerts_count: "Alertas",
+  alerts_count: "Alertas", co2_tonnes: "CO₂ (t)",
 }
 
 interface ChartRow {
@@ -33,6 +33,7 @@ interface ChartRow {
   deforestation_ha: number; urban_expansion_ha: number
   burned_ha: number; hansen_ha: number; firms_hotspots: number
   sar_ha: number; alerts_count: number
+  co2_tonnes: number
 }
 
 interface Anomaly {
@@ -45,6 +46,7 @@ interface Cumulative {
   total_burned_ha: number; total_firms_hotspots: number
   total_hansen_loss_ha: number; total_sar_change_ha: number
   total_alerts: number
+  total_co2_tonnes: number; total_carbon_tonnes: number
   bosque_denso_change_pct: number; urbano_change_pct: number
   years_analyzed: number; period: string
   engines_used?: string[]
@@ -155,6 +157,7 @@ export default function TimelinePanel({
             burned_ha: d.fire?.stats?.total_burned_ha ?? 0,
             hansen_ha: d.hansen?.stats?.loss_ha ?? 0,
             firms_hotspots: d.firms_hotspots?.stats?.hotspot_count ?? 0,
+            co2_tonnes: d.deforestation?.stats?.co2_tonnes ?? 0,
             sar_ha: d.sar?.stats?.total_change_ha ?? 0,
             alerts_count: d.alerts?.stats?.total_alerts ?? 0,
           })
@@ -233,6 +236,16 @@ export default function TimelinePanel({
             <p className="text-base font-bold text-orange-400">{cumulative.total_urban_expansion_ha} ha</p>
             <p className="text-[9px] text-[#8b949e]">{cumulative.years_analyzed} años</p>
           </div>
+          {(cumulative.total_co2_tonnes ?? 0) > 0 && (
+            <div className="bg-[#21262d] rounded p-2 border border-[#30363d] col-span-2">
+              <p className="text-[9px] text-[#8b949e] uppercase tracking-wide">Impacto en carbono (GEDI)</p>
+              <div className="flex items-baseline gap-3">
+                <p className="text-base font-bold text-emerald-400">{cumulative.total_co2_tonnes.toLocaleString()} tCO₂</p>
+                <p className="text-[10px] text-[#8b949e]">{(cumulative.total_carbon_tonnes ?? 0).toLocaleString()} tC</p>
+              </div>
+              <p className="text-[9px] text-[#8b949e]">NASA GEDI L4B · {cumulative.period}</p>
+            </div>
+          )}
           {(cumulative.total_burned_ha ?? 0) > 0 && (
             <div className="bg-[#21262d] rounded p-2 border border-[#30363d]">
               <p className="text-[9px] text-[#8b949e] uppercase tracking-wide">Total quemado</p>
@@ -372,6 +385,11 @@ export default function TimelinePanel({
               <p className="text-sm font-bold" style={{ color: "#f85149" }}>
                 {sel.deforestation?.stats?.area_ha ?? 0} ha
               </p>
+              {(sel.deforestation?.stats?.co2_tonnes ?? 0) > 0 && (
+                <p className="text-[9px] font-semibold" style={{ color: "#34d399" }}>
+                  {sel.deforestation.stats.co2_tonnes.toLocaleString()} tCO₂
+                </p>
+              )}
             </div>
           )}
           {sel.urban_expansion && (

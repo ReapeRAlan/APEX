@@ -36,6 +36,7 @@ function App() {
   const [layerVis, setLayerVis] = useState<Record<string, boolean>>({
     def: true, str: true, veg: true, ue: true,
     hansen: true, alerts: true, drivers: true, fire: true, anp: true, sar: true,
+    firms_hotspots: true, avocado: true, spectralgpt: true, drivers_mx: true,
   })
   const [jobId, setJobId] = useState<string | null>(null)
   const [timelineJobId, setTimelineJobId] = useState<string | null>(null)
@@ -103,11 +104,33 @@ function App() {
   const handleToggleEngine = (engine: string) => {
     setEngines((prev) => prev.includes(engine) ? prev.filter((e) => e !== engine) : [...prev, engine])
   }
+  const handleSetAllEngines = () => {
+    setEngines(["deforestation", "vegetation", "structures", "urban_expansion", "hansen", "alerts", "drivers", "fire", "sar", "firms_hotspots", "avocado", "spectralgpt", "drivers_mx"])
+  }
+  const handleClearEngines = () => setEngines([])
 
   // ── Layer visibility (calls into MapView imperative handle) ──
   const handleToggleLayer = (key: string, visible: boolean) => {
     mapRef.current?.toggleLayerVisibility(key as LayerKey, visible)
     setLayerVis((prev) => ({ ...prev, [key]: visible }))
+  }
+  const handleShowAllLayers = () => {
+    const all: Record<string, boolean> = {}
+    const keys = ["def","str","veg","ue","hansen","alerts","drivers","fire","anp","sar","firms_hotspots","avocado","spectralgpt","drivers_mx"]
+    keys.forEach(k => {
+      all[k] = true
+      mapRef.current?.toggleLayerVisibility(k as LayerKey, true)
+    })
+    setLayerVis(all)
+  }
+  const handleHideAllLayers = () => {
+    const all: Record<string, boolean> = {}
+    const keys = ["def","str","veg","ue","hansen","alerts","drivers","fire","anp","sar","firms_hotspots","avocado","spectralgpt","drivers_mx"]
+    keys.forEach(k => {
+      all[k] = false
+      mapRef.current?.toggleLayerVisibility(k as LayerKey, false)
+    })
+    setLayerVis(all)
   }
 
   // ── Polygon area estimate (km²) ──
@@ -125,8 +148,8 @@ function App() {
     return area * degToKm * degToKm * Math.cos((midLat * Math.PI) / 180)
   }
 
-  // ── Analyze ──
-  const handleAnalyze = async () => {
+  // ── Analyze (unified: analysis + timeline in one click) ──
+  const handleAnalyze = async (startYear: number, endYear: number, season: string) => {
     if (!aoi || isAnalyzing) return
 
     const areaKm2 = estimateAreaKm2(aoi)
@@ -143,15 +166,17 @@ function App() {
       aoi, engines, date_range: ["2022-01-01", "2023-12-31"],
       notify_email: notifyEmail || undefined,
     }
-    console.log(`%c[APEX] POST /api/analyze`, "color: #58a6ff; font-weight: bold",
+    console.log(`%c[APEX] POST /api/analyze (unified)`, "color: #58a6ff; font-weight: bold",
       `\n  engines=${engines.join(",")}`,
-      `\n  notify_email=${notifyEmail || "(none)"}`,
+      `\n  timeline=${startYear}→${endYear} (${season})`,
       `\n  API=${API_BASE_URL}`,
       `\n  AOI=${JSON.stringify(aoi).slice(0, 150)}`)
     setIsAnalyzing(true)
     setAnalysisStatus("running")
     setResults(null)
     setJobId(null)
+    setTimelineJobId(null)
+    mapRef.current?.clearForecastLayers()
     try {
       const res = await fetch(`${API_BASE_URL}/api/analyze`, {
         method: "POST",
@@ -170,42 +195,34 @@ function App() {
       const data = await res.json()
       console.log(`%c[APEX] Job creado: ${data.job_id}`, "color: #3fb950; font-weight: bold")
       setJobId(data.job_id)
+
+      // Auto-trigger timeline in background with user-chosen params
+      try {
+        const tlRes = await fetch(`${API_BASE_URL}/api/timeline`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            aoi,
+            start_year: startYear,
+            end_year: endYear,
+            engines: engines.length > 0 ? engines : ["deforestation", "urban_expansion"],
+            season,
+            notify_email: notifyEmail || undefined,
+          }),
+        })
+        if (tlRes.ok) {
+          const tlData = await tlRes.json()
+          setTimelineJobId(tlData.job_id)
+          console.log(`%c[APEX] Timeline auto-triggered: ${tlData.job_id} (${startYear}→${endYear}, ${season})`, "color: #f0883e; font-weight: bold")
+        }
+      } catch (tlErr) {
+        console.warn("[APEX] Auto-timeline failed (non-critical):", tlErr)
+      }
     } catch (e: any) {
       console.error(`%c[APEX] /api/analyze ERROR de red`, "color: #f85149; font-weight: bold",
         `\n  ${e.message || e}`,
         `\n  Verifica que el backend este corriendo en ${API_BASE_URL}`)
       showToast(`No se pudo conectar al backend (${API_BASE_URL})`)
-      setIsAnalyzing(false)
-      setAnalysisStatus("failed")
-    }
-  }
-
-  // ── Timeline ──
-  const handleTimelineAnalyze = async () => {
-    if (!aoi || isAnalyzing) return
-    console.log("[APEX] AOI enviado a /api/timeline:", JSON.stringify(aoi).slice(0, 200))
-    setIsAnalyzing(true)
-    setAnalysisStatus("running")
-    setTimelineJobId(null)
-    mapRef.current?.clearForecastLayers()
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/timeline`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          aoi,
-          start_year: 2018,
-          end_year: 2025,
-          engines: engines.length > 0 ? engines : ["deforestation", "urban_expansion"],
-          season: "dry",
-          notify_email: notifyEmail || undefined,
-        }),
-      })
-      const data = await res.json()
-      setTimelineJobId(data.job_id)
-      setJobId(data.job_id)
-    } catch (e: any) {
-      console.error("Error enviando timeline:", e)
       setIsAnalyzing(false)
       setAnalysisStatus("failed")
     }
@@ -301,8 +318,9 @@ function App() {
         aoi={aoi}
         engines={engines}
         onToggleEngine={handleToggleEngine}
+        onSetAllEngines={handleSetAllEngines}
+        onClearEngines={handleClearEngines}
         onAnalyze={handleAnalyze}
-        onTimelineAnalyze={handleTimelineAnalyze}
         isAnalyzing={isAnalyzing}
         jobId={jobId}
         timelineJobId={timelineJobId}
@@ -310,6 +328,8 @@ function App() {
         onJobCompleted={handleJobCompleted}
         layerVis={layerVis}
         onToggleLayer={handleToggleLayer}
+        onShowAllLayers={handleShowAllLayers}
+        onHideAllLayers={handleHideAllLayers}
         onRenderYear={handleRenderYear}
         onClearYearLayers={handleClearYearLayers}
         onClearAoi={handleClearAoi}

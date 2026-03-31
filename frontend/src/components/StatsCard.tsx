@@ -97,7 +97,7 @@ export default function StatsCard({ results }: { results: any }) {
             mainValue={`${s.area_ha ?? "?"} ha`}
             mainLabel={`${s.n_features ?? "?"} zonas detectadas`}>
             <Stat label="% del AOI" value={`${s.percent_changed ?? "?"}%`} accent="#f0883e" />
-            <Stat label="Fuente" value="Dynamic World T1\u2192T2" />
+            <Stat label="Fuente" value="Dynamic World T1→T2" />
           </EngineCard>
         )
       })()}
@@ -282,6 +282,105 @@ export default function StatsCard({ results }: { results: any }) {
             )}
             <Stat label="Periodo" value={s.date_range || "—"} />
             <Stat label="Fuente" value="NASA FIRMS (VIIRS/MODIS NRT)" />
+          </EngineCard>
+        )
+      })()}
+
+      {/* ── SAR Change Detection ── */}
+      {results.layers?.sar?.stats && (() => {
+        const s = results.layers.sar.stats
+        return (
+          <EngineCard title="Cambios SAR (Sentinel-1)" color="#06b6d4"
+            mainValue={`${s.total_change_ha?.toFixed?.(1) ?? "?"} ha`}
+            mainLabel={`${s.sar_change_count ?? 0} zonas de cambio`}>
+            <Stat label="Alta confianza" value={`${s.high_confidence_count ?? 0}`} accent="#06b6d4" />
+            <Stat label="Fuente" value="Sentinel-1 SAR (log-ratio)" />
+          </EngineCard>
+        )
+      })()}
+
+      {/* ── AVOCADO Anomalies ── */}
+      {results.layers?.avocado?.stats && (() => {
+        const s = results.layers.avocado.stats
+        const SEV_COLORS: Record<string, string> = {
+          critica: "#dc2626", alta: "#f97316", media: "#eab308", baja: "#22c55e",
+        }
+        const sevEntries = Object.entries(s.by_severity ?? {}).sort(
+          ([a], [b]) => ["critica", "alta", "media", "baja"].indexOf(a) - ["critica", "alta", "media", "baja"].indexOf(b)
+        )
+        return (
+          <EngineCard title="AVOCADO (Anomalias NDVI)" color="#a855f7"
+            mainValue={`${s.n_anomalies ?? 0} anomalias`}
+            mainLabel={`${s.total_area_ha ?? 0} ha afectadas`}>
+            {sevEntries.map(([sev, count]) => (
+              <Stat key={sev} label={sev.charAt(0).toUpperCase() + sev.slice(1)} value={count as number} accent={SEV_COLORS[sev] ?? "#a855f7"} />
+            ))}
+            <Stat label="Fuente" value="AVOCADO (S2 NDVI percentil)" />
+          </EngineCard>
+        )
+      })()}
+
+      {/* ── SpectralGPT ── */}
+      {results.layers?.spectralgpt?.stats && (() => {
+        const s = results.layers.spectralgpt.stats
+        const classes = s.classes ?? {}
+        const SGPT_COLORS: Record<string, string> = {
+          vegetation_stress: "#ef4444", urban_change: "#8b5cf6", water_anomaly: "#3b82f6",
+          soil_exposure: "#92400e", healthy_vegetation: "#22c55e",
+        }
+        const data = Object.entries(classes)
+          .filter(([, v]) => (v as number) > 0)
+          .map(([key, value]) => ({
+            name: key.replace(/_/g, " "),
+            value: value as number,
+            color: SGPT_COLORS[key] ?? "#14b8a6",
+          }))
+          .sort((a, b) => b.value - a.value)
+        return (
+          <EngineCard title="SpectralGPT (LULC)" color="#14b8a6"
+            mainValue={`${s.n_features ?? 0} detecciones`}
+            mainLabel={`${data.length} clases espectrales`}>
+            {data.map((d) => (
+              <div key={d.name} className="flex items-center gap-1.5 py-0.5">
+                <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: d.color }} />
+                <span className="text-[10px] truncate flex-1" style={{ color: C.text2 }}>{d.name}</span>
+                <span className="text-[10px] font-medium" style={{ color: C.text1 }}>{d.value}%</span>
+              </div>
+            ))}
+            <Stat label="Fuente" value="SpectralGPT (ESA)" />
+          </EngineCard>
+        )
+      })()}
+
+      {/* ── ForestNet-MX Drivers ── */}
+      {results.layers?.drivers_mx?.stats && (() => {
+        const s = results.layers.drivers_mx.stats
+        const MX_COLORS: Record<string, string> = {
+          ganaderia: "#22c55e", agricultura: "#84cc16", expansion_urbana: "#8b5cf6",
+          incendio: "#ef4444", tala_ilegal: "#dc2626", infraestructura: "#f59e0b",
+          plantacion: "#06b6d4", perturbacion_natural: "#6b7280",
+        }
+        const driverPct = s.driver_pct ?? {}
+        const data = Object.entries(driverPct)
+          .filter(([, v]) => (v as number) > 0)
+          .map(([key, value]) => ({
+            name: key.replace(/_/g, " "),
+            value: value as number,
+            color: MX_COLORS[key] ?? "#c084fc",
+          }))
+          .sort((a, b) => b.value - a.value)
+        return (
+          <EngineCard title="ForestNet-MX (Drivers)" color="#c084fc"
+            mainValue={`${s.n_classified ?? 0} clasificados`}
+            mainLabel={`Dominante: ${s.dominant_label ?? "—"}`}>
+            {data.map((d) => (
+              <div key={d.name} className="flex items-center gap-1.5 py-0.5">
+                <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: d.color }} />
+                <span className="text-[10px] truncate flex-1" style={{ color: C.text2 }}>{d.name}</span>
+                <span className="text-[10px] font-medium" style={{ color: C.text1 }}>{d.value}%</span>
+              </div>
+            ))}
+            <Stat label="Fuente" value="ForestNet-MX (heuristic v1)" />
           </EngineCard>
         )
       })()}

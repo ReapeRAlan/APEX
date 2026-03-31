@@ -3,6 +3,7 @@ import JobStatus from "./JobStatus"
 import StatsCard from "./StatsCard"
 import TimelinePanel from "./TimelinePanel"
 import MonitoringPanel from "./MonitoringPanel"
+import ChatPanel from "./ChatPanel"
 import PolygonManager, { type UploadedPolygon } from "./PolygonManager"
 import type { DrawMode } from "./MapView"
 import { API_BASE_URL } from "../config"
@@ -32,18 +33,29 @@ const ENGINE_META: Record<string, { label: string; color: string; accent: string
   fire: { label: "Incendios (MODIS)", color: "#f97316", accent: "bg-orange-600/20 text-orange-300 border-orange-600/30" },
   sar: { label: "SAR (Sentinel-1)", color: "#06b6d4", accent: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30" },
   firms_hotspots: { label: "FIRMS NRT (hotspots)", color: "#ff3b30", accent: "bg-red-600/20 text-red-300 border-red-600/30" },
+  avocado: { label: "Anomalías NDVI (AVOCADO)", color: "#a855f7", accent: "bg-violet-500/20 text-violet-400 border-violet-500/30" },
+  spectralgpt: { label: "SpectralGPT (LULC)", color: "#14b8a6", accent: "bg-teal-500/20 text-teal-400 border-teal-500/30" },
+  drivers_mx: { label: "ForestNet-MX (Drivers)", color: "#c084fc", accent: "bg-purple-400/20 text-purple-300 border-purple-400/30" },
 }
 
 const ALL_ENGINE_KEYS = Object.keys(ENGINE_META) as (keyof typeof ENGINE_META)[]
 
-type Tab = "analysis" | "timeline" | "results" | "monitoring"
+const ENGINE_GROUPS: { label: string; color: string; engines: string[] }[] = [
+  { label: "Detección Base", color: "#58a6ff", engines: ["deforestation", "vegetation", "structures", "urban_expansion"] },
+  { label: "Pérdida Forestal", color: "#facc15", engines: ["hansen", "alerts", "drivers", "drivers_mx"] },
+  { label: "IA / Sensores", color: "#14b8a6", engines: ["spectralgpt", "sar", "avocado"] },
+  { label: "Incendios", color: "#f97316", engines: ["fire", "firms_hotspots"] },
+]
+
+type Tab = "config" | "results" | "monitoring"
 
 interface SidebarProps {
   aoi: object | null
   engines: string[]
   onToggleEngine: (engine: string) => void
-  onAnalyze: () => void
-  onTimelineAnalyze: () => void
+  onSetAllEngines: () => void
+  onClearEngines: () => void
+  onAnalyze: (startYear: number, endYear: number, season: string) => void
   isAnalyzing: boolean
   jobId: string | null
   timelineJobId: string | null
@@ -51,6 +63,8 @@ interface SidebarProps {
   onJobCompleted?: (id: string) => void
   layerVis: Record<string, boolean>
   onToggleLayer: (key: string, visible: boolean) => void
+  onShowAllLayers: () => void
+  onHideAllLayers: () => void
   onRenderYear: (year: number, data: any) => void
   onClearYearLayers?: () => void
   onClearAoi?: () => void
@@ -101,6 +115,33 @@ function LayerToggle({ label, color, checked, onChange }: { label: string; color
       </span>
       <span className="text-xs group-hover:brightness-125 transition-all" style={{ color }}>{label}</span>
     </label>
+  )
+}
+
+/* ── Collapsible engine group ─────────────────── */
+function EngineGroup({ label, color, activeCount, total, children }: {
+  label: string; color: string; activeCount: number; total: number; children: ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="mb-1.5">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/5"
+        style={{ color }}
+      >
+        <span className="flex items-center gap-1.5">
+          <svg className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          {label}
+        </span>
+        <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full" style={{ backgroundColor: color + "22", color }}>
+          {activeCount}/{total}
+        </span>
+      </button>
+      {open && <div className="ml-2 space-y-0.5">{children}</div>}
+    </div>
   )
 }
 
@@ -174,31 +215,39 @@ function SendReportSection({ jobId, notifyEmail }: { jobId: string | null; notif
 
 /* ── Main Sidebar ─────────────────────────────── */
 export default function Sidebar({
-  aoi, engines, onToggleEngine, onAnalyze, onTimelineAnalyze,
+  aoi, engines, onToggleEngine, onSetAllEngines, onClearEngines, onAnalyze,
   isAnalyzing, jobId, timelineJobId, results, onJobCompleted,
-  layerVis, onToggleLayer, onRenderYear, onClearYearLayers,
+  layerVis, onToggleLayer, onShowAllLayers, onHideAllLayers, onRenderYear, onClearYearLayers,
   onClearAoi, onEditAoi, onStartDraw, onCancelDraw,
   drawMode, notifyEmail, onNotifyEmailChange,
   uploadedPolygons, onUploadedPolygonsChange, onUsePolygonAsAoi, onFlyToBbox,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("analysis")
+  const [activeTab, setActiveTab] = useState<Tab>("config")
+  const [timelineStartYear, setTimelineStartYear] = useState(2018)
+  const [timelineEndYear, setTimelineEndYear] = useState(2025)
+  const [timelineSeason, setTimelineSeason] = useState("dry")
 
   const handleTabChange = (tab: Tab) => {
-    if (activeTab === "timeline" && tab !== "timeline") {
+    if (activeTab === "results" && tab !== "results") {
       onClearYearLayers?.()
     }
     setActiveTab(tab)
   }
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "analysis", label: "Analisis" },
-    { key: "timeline", label: "Timeline" },
-    { key: "results", label: "Resultados" },
-    { key: "monitoring", label: "Monitoreo" },
+  // Auto-switch to results when analysis completes
+  const prevResults = useState(results)[0]
+  if (results && !prevResults && activeTab === "config") {
+    // Don't auto-switch — let user decide
+  }
+
+  const tabs: { key: Tab; label: string; icon: string }[] = [
+    { key: "config", label: "Configurar", icon: "⚙" },
+    { key: "results", label: "Resultados", icon: "📊" },
+    { key: "monitoring", label: "Monitoreo", icon: "🛰" },
   ]
 
   return (
-    <div className="flex flex-col h-full w-[280px] select-none" style={{ backgroundColor: C.bgPanel }}>
+    <div className="flex flex-col h-full w-[300px] select-none" style={{ backgroundColor: C.bgPanel }}>
       {/* ─── Header ─── */}
       <div className="flex-shrink-0 px-4 pt-3 pb-2" style={{ background: `linear-gradient(180deg, ${C.bgPanel} 0%, ${C.bgBase} 100%)` }}>
         <div className="flex items-center gap-3">
@@ -223,9 +272,16 @@ export default function Sidebar({
             }`}
             style={{ color: activeTab === t.key ? C.text1 : C.text2 }}
           >
-            {t.label}
+            <span className="flex items-center justify-center gap-1">
+              <span className="text-[10px]">{t.icon}</span>
+              {t.label}
+            </span>
             {activeTab === t.key && (
               <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-full" style={{ backgroundColor: C.green }} />
+            )}
+            {/* Badge for results */}
+            {t.key === "results" && results && (
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: C.green }} />
             )}
           </button>
         ))}
@@ -233,65 +289,40 @@ export default function Sidebar({
 
       {/* ─── Scrollable content ─── */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {/* ── Analysis tab ── */}
-        {activeTab === "analysis" && (
+
+        {/* ══════════ CONFIG TAB ══════════ */}
+        {activeTab === "config" && (
           <>
-            <Section title="Motores de deteccion">
-              <div className="space-y-0.5">
-                {ALL_ENGINE_KEYS.map((e) => {
-                  const meta = ENGINE_META[e]
-                  const active = engines.includes(e)
-                  return (
+            {/* ── 1. AOI: Draw / Upload ── */}
+            <Section title="1. Area de interes (AOI)">
+              {aoi ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ backgroundColor: C.green + "15", border: `1px solid ${C.green}33` }}>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: C.green }} />
+                    <span className="text-[11px] font-medium" style={{ color: C.green }}>AOI definido</span>
+                  </div>
+                  <div className="flex gap-2">
                     <button
-                      key={e}
-                      onClick={() => onToggleEngine(e)}
-                      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md border text-xs font-medium transition-all ${
-                        active ? meta.accent : "border-transparent text-gray-500 hover:bg-white/5"
-                      }`}
-                      style={{ borderColor: active ? undefined : "transparent" }}
+                      onClick={onEditAoi}
+                      className="flex-1 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors"
+                      style={{
+                        borderColor: drawMode === "select" ? C.blue : C.border,
+                        color: drawMode === "select" ? C.blue : C.text2,
+                        backgroundColor: drawMode === "select" ? C.blue + "22" : "transparent",
+                      }}
                     >
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: active ? meta.color : C.border }} />
-                      {meta.label}
+                      {drawMode === "select" ? "Editando..." : "Editar"}
                     </button>
-                  )
-                })}
-              </div>
-            </Section>
-
-            {/* AOI Management */}
-            {aoi && (
-              <Section title="Area de interes (AOI)">
-                <div className="flex gap-2">
-                  <button
-                    onClick={onEditAoi}
-                    className="flex-1 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors"
-                    style={{
-                      borderColor: drawMode === "select" ? C.blue : C.border,
-                      color: drawMode === "select" ? C.blue : C.text2,
-                      backgroundColor: drawMode === "select" ? C.blue + "22" : "transparent",
-                    }}
-                  >
-                    {drawMode === "select" ? "Editando..." : "Editar vertices"}
-                  </button>
-                  <button
-                    onClick={onClearAoi}
-                    className="flex-1 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors hover:bg-red-500/10"
-                    style={{ borderColor: C.red + "66", color: C.red }}
-                  >
-                    Borrar AOI
-                  </button>
+                    <button
+                      onClick={onClearAoi}
+                      className="flex-1 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors hover:bg-red-500/10"
+                      style={{ borderColor: C.red + "44", color: C.red }}
+                    >
+                      Borrar
+                    </button>
+                  </div>
                 </div>
-                <p className="text-[10px] mt-1.5" style={{ color: C.text2 }}>
-                  {drawMode === "select"
-                    ? "Arrastra los vertices para modificar. Pulsa Editar de nuevo para terminar."
-                    : "Poligono dibujado. Puedes editar vertices o borrar y redibujar."}
-                </p>
-              </Section>
-            )}
-
-            {/* Drawing controls */}
-            <Section title="Dibujar en mapa">
-              {drawMode === "polygon" ? (
+              ) : drawMode === "polygon" ? (
                 <div className="space-y-1.5">
                   <div className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ backgroundColor: C.blue + "22", border: `1px solid ${C.blue}44` }}>
                     <span className="relative flex h-2 w-2">
@@ -308,11 +339,11 @@ export default function Sidebar({
                     className="w-full py-1.5 rounded-md text-xs font-medium border transition-colors hover:bg-red-500/10"
                     style={{ borderColor: C.red + "66", color: C.red }}
                   >
-                    Cancelar dibujo
+                    Cancelar
                   </button>
                 </div>
               ) : (
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <button
                     onClick={onStartDraw}
                     className="w-full py-2 rounded-md text-xs font-semibold border transition-all hover:brightness-110"
@@ -322,161 +353,238 @@ export default function Sidebar({
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                       </svg>
-                      Dibujar poligono
+                      Dibujar poligono en mapa
                     </span>
                   </button>
-                  <p className="text-[10px]" style={{ color: C.text2 }}>
-                    Dibuja un poligono en el mapa o sube un archivo abajo.
-                  </p>
+                  <PolygonManager
+                    polygons={uploadedPolygons}
+                    onPolygonsChange={onUploadedPolygonsChange}
+                    onUseAsAoi={onUsePolygonAsAoi}
+                    onFlyToBbox={onFlyToBbox}
+                  />
                 </div>
               )}
             </Section>
 
-            {/* Polygon upload & management */}
-            <Section title="Cargar poligonos" defaultOpen={!aoi}>
-              <PolygonManager
-                polygons={uploadedPolygons}
-                onPolygonsChange={onUploadedPolygonsChange}
-                onUseAsAoi={onUsePolygonAsAoi}
-                onFlyToBbox={onFlyToBbox}
-              />
+            {/* ── 2. Engines ── */}
+            <Section title="2. Motores de deteccion">
+              <div className="flex gap-1.5 mb-2">
+                <button
+                  onClick={onSetAllEngines}
+                  className="flex-1 px-2 py-1 rounded text-[10px] font-semibold border transition-colors hover:bg-white/10"
+                  style={{ borderColor: C.border, color: C.text2 }}
+                >Todos ({ALL_ENGINE_KEYS.length})</button>
+                <button
+                  onClick={onClearEngines}
+                  className="flex-1 px-2 py-1 rounded text-[10px] font-semibold border transition-colors hover:bg-white/10"
+                  style={{ borderColor: C.border, color: C.text2 }}
+                >Ninguno</button>
+              </div>
+              <p className="text-[10px] mb-2" style={{ color: C.text2 }}>
+                {engines.length} de {ALL_ENGINE_KEYS.length} seleccionados
+              </p>
+              {ENGINE_GROUPS.map((group) => {
+                const activeCount = group.engines.filter((e) => engines.includes(e)).length
+                return (
+                  <EngineGroup key={group.label} label={group.label} color={group.color} activeCount={activeCount} total={group.engines.length}>
+                    {group.engines.map((e) => {
+                      const meta = ENGINE_META[e]
+                      if (!meta) return null
+                      const active = engines.includes(e)
+                      return (
+                        <button
+                          key={e}
+                          onClick={() => onToggleEngine(e)}
+                          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md border text-xs font-medium transition-all ${
+                            active ? meta.accent : "border-transparent text-gray-500 hover:bg-white/5"
+                          }`}
+                          style={{ borderColor: active ? undefined : "transparent" }}
+                        >
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: active ? meta.color : C.border }} />
+                          {meta.label}
+                        </button>
+                      )
+                    })}
+                  </EngineGroup>
+                )
+              })}
             </Section>
 
-            {/* Email notification */}
+            {/* ── 3. Timeline config ── */}
+            <Section title="3. Periodo temporal" defaultOpen={true}>
+              <div className="space-y-2">
+                <div className="flex gap-2 items-center">
+                  <select
+                    value={timelineStartYear}
+                    onChange={(e) => setTimelineStartYear(Number(e.target.value))}
+                    className="flex-1 rounded-md px-2 py-1.5 text-xs outline-none"
+                    style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, color: C.text1 }}
+                  >
+                    {Array.from({ length: 10 }, (_, i) => 2016 + i).map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs" style={{ color: C.text2 }}>→</span>
+                  <select
+                    value={timelineEndYear}
+                    onChange={(e) => setTimelineEndYear(Number(e.target.value))}
+                    className="flex-1 rounded-md px-2 py-1.5 text-xs outline-none"
+                    style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, color: C.text1 }}
+                  >
+                    {Array.from({ length: 10 }, (_, i) => 2016 + i).map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-1.5">
+                  {([["dry", "Seca"], ["wet", "Lluviosa"], ["annual", "Anual"]] as const).map(([val, lbl]) => (
+                    <button
+                      key={val}
+                      onClick={() => setTimelineSeason(val)}
+                      className={`flex-1 px-2 py-1.5 rounded-md text-[10px] font-medium border transition-all ${
+                        timelineSeason === val ? "border-orange-500/40 text-orange-400 bg-orange-500/15" : "border-transparent text-gray-500 hover:bg-white/5"
+                      }`}
+                    >{lbl}</button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-center" style={{ color: C.text2 }}>
+                  {engines.length} motores × {timelineEndYear - timelineStartYear + 1} anos = analisis completo + timeline
+                </p>
+              </div>
+            </Section>
+
+            {/* ── 4. Email (collapsed) ── */}
             <Section title="Notificacion por email" defaultOpen={false}>
               <div className="space-y-1.5">
-                <p className="text-[10px]" style={{ color: C.text2 }}>
-                  Recibe el reporte con PDF al finalizar el analisis.
-                </p>
                 <input
                   type="email"
                   placeholder="inspector@profepa.gob.mx"
                   value={notifyEmail}
                   onChange={(e) => onNotifyEmailChange(e.target.value)}
                   className="w-full rounded-md px-2.5 py-1.5 text-xs outline-none placeholder:text-gray-500"
-                  style={{
-                    backgroundColor: C.bgCard,
-                    border: `1px solid ${C.border}`,
-                    color: C.text1,
-                  }}
+                  style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, color: C.text1 }}
                 />
                 {notifyEmail && (
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: C.green }} />
-                    <span className="text-[10px]" style={{ color: C.green }}>
-                      Se enviara reporte a {notifyEmail}
-                    </span>
+                    <span className="text-[10px]" style={{ color: C.green }}>Se enviara reporte a {notifyEmail}</span>
                   </div>
                 )}
               </div>
             </Section>
 
-            {/* Job progress */}
+            {/* ── Job progress (appears when running) ── */}
             {jobId && (
               <div className="px-4 py-3 border-b" style={{ borderColor: C.border }}>
                 <JobStatus jobId={jobId} onCompleted={onJobCompleted} />
               </div>
             )}
+          </>
+        )}
 
-            {/* Layer visibility */}
-            {results && (
-              <Section title="Capas de resultados">
-                <LayerToggle label="Deforestacion" color="#f85149" checked={layerVis.def} onChange={(v) => onToggleLayer("def", v)} />
-                <LayerToggle label="Estructuras" color="#58a6ff" checked={layerVis.str} onChange={(v) => onToggleLayer("str", v)} />
-                <LayerToggle label="Vegetacion" color="#2ea043" checked={layerVis.veg} onChange={(v) => onToggleLayer("veg", v)} />
-                <LayerToggle label="Expansion urbana" color="#f0883e" checked={layerVis.ue} onChange={(v) => onToggleLayer("ue", v)} />
-                <LayerToggle label="Hansen Forest Loss" color="#facc15" checked={layerVis.hansen} onChange={(v) => onToggleLayer("hansen", v)} />
-                <LayerToggle label="Alertas GLAD/RADD" color="#dc2626" checked={layerVis.alerts} onChange={(v) => onToggleLayer("alerts", v)} />
-                <LayerToggle label="Drivers (WRI)" color="#8b5cf6" checked={layerVis.drivers} onChange={(v) => onToggleLayer("drivers", v)} />
-                <LayerToggle label="Incendios" color="#f97316" checked={layerVis.fire} onChange={(v) => onToggleLayer("fire", v)} />
-                <LayerToggle label="ANPs" color="#22c55e" checked={layerVis.anp} onChange={(v) => onToggleLayer("anp", v)} />
-                <LayerToggle label="SAR (Sentinel-1)" color="#06b6d4" checked={layerVis.sar} onChange={(v) => onToggleLayer("sar", v)} />
-                <LayerToggle label="FIRMS Hotspots NRT" color="#ff3b30" checked={layerVis.firms_hotspots} onChange={(v) => onToggleLayer("firms_hotspots", v)} />
-              </Section>
+        {/* ══════════ RESULTS TAB ══════════ */}
+        {activeTab === "results" && (
+          <>
+            {results ? (
+              <>
+                {/* Stats */}
+                <div className="px-4 py-3 border-b" style={{ borderColor: C.border }}>
+                  <StatsCard results={results} />
+                  <SendReportSection jobId={jobId} notifyEmail={notifyEmail} />
+                </div>
+
+                {/* Timeline viewer */}
+                {timelineJobId && (
+                  <Section title="Timeline multi-temporal">
+                    <TimelinePanel jobId={timelineJobId} onYearSelect={onRenderYear} />
+                  </Section>
+                )}
+
+                {/* Layer management */}
+                <Section title="Capas del mapa">
+                  <div className="flex gap-1.5 mb-2">
+                    <button
+                      onClick={onShowAllLayers}
+                      className="flex-1 px-2 py-1 rounded text-[10px] font-semibold border transition-colors hover:bg-white/10"
+                      style={{ borderColor: C.border, color: C.text2 }}
+                    >Mostrar todo</button>
+                    <button
+                      onClick={onHideAllLayers}
+                      className="flex-1 px-2 py-1 rounded text-[10px] font-semibold border transition-colors hover:bg-white/10"
+                      style={{ borderColor: C.border, color: C.text2 }}
+                    >Ocultar todo</button>
+                  </div>
+                  <LayerToggle label="Deforestacion" color="#f85149" checked={layerVis.def ?? false} onChange={(v) => onToggleLayer("def", v)} />
+                  <LayerToggle label="Estructuras" color="#58a6ff" checked={layerVis.str ?? false} onChange={(v) => onToggleLayer("str", v)} />
+                  <LayerToggle label="Vegetacion" color="#2ea043" checked={layerVis.veg ?? false} onChange={(v) => onToggleLayer("veg", v)} />
+                  <LayerToggle label="Expansion urbana" color="#f0883e" checked={layerVis.ue ?? false} onChange={(v) => onToggleLayer("ue", v)} />
+                  <LayerToggle label="Hansen Forest Loss" color="#facc15" checked={layerVis.hansen ?? false} onChange={(v) => onToggleLayer("hansen", v)} />
+                  <LayerToggle label="Alertas GLAD/RADD" color="#dc2626" checked={layerVis.alerts ?? false} onChange={(v) => onToggleLayer("alerts", v)} />
+                  <LayerToggle label="Drivers (WRI)" color="#8b5cf6" checked={layerVis.drivers ?? false} onChange={(v) => onToggleLayer("drivers", v)} />
+                  <LayerToggle label="ForestNet-MX" color="#c084fc" checked={layerVis.drivers_mx ?? false} onChange={(v) => onToggleLayer("drivers_mx", v)} />
+                  <LayerToggle label="Incendios" color="#f97316" checked={layerVis.fire ?? false} onChange={(v) => onToggleLayer("fire", v)} />
+                  <LayerToggle label="FIRMS Hotspots" color="#ff3b30" checked={layerVis.firms_hotspots ?? false} onChange={(v) => onToggleLayer("firms_hotspots", v)} />
+                  <LayerToggle label="ANPs" color="#22c55e" checked={layerVis.anp ?? false} onChange={(v) => onToggleLayer("anp", v)} />
+                  <LayerToggle label="SAR (Sentinel-1)" color="#06b6d4" checked={layerVis.sar ?? false} onChange={(v) => onToggleLayer("sar", v)} />
+                  <LayerToggle label="AVOCADO (NDVI)" color="#a855f7" checked={layerVis.avocado ?? false} onChange={(v) => onToggleLayer("avocado", v)} />
+                  <LayerToggle label="SpectralGPT" color="#14b8a6" checked={layerVis.spectralgpt ?? false} onChange={(v) => onToggleLayer("spectralgpt", v)} />
+                </Section>
+
+                {/* Chat IA */}
+                <Section title="Chat IA" defaultOpen={false}>
+                  <div style={{ height: 350 }}>
+                    <ChatPanel jobId={jobId} results={results} />
+                  </div>
+                </Section>
+              </>
+            ) : (
+              <div className="text-center py-12 px-4">
+                <div className="text-2xl mb-3 opacity-30">📊</div>
+                <p className="text-xs mb-1" style={{ color: C.text1 }}>Sin resultados</p>
+                <p className="text-[10px]" style={{ color: C.text2 }}>
+                  Configura tus motores y AOI en la pestana Configurar, luego presiona "Analizar AOI".
+                </p>
+              </div>
             )}
           </>
         )}
 
-        {/* ── Timeline tab (always mounted to preserve state) ── */}
-        <div style={{ display: activeTab === "timeline" ? undefined : "none" }} className="px-4 py-3">
-          {timelineJobId ? (
-            <TimelinePanel jobId={timelineJobId} onYearSelect={onRenderYear} />
-          ) : (
-            <div className="text-center py-8">
-              <p className="text-xs" style={{ color: C.text2 }}>
-                {aoi
-                  ? "Lanza un analisis multi-temporal con TODOS los motores seleccionados (2018\u21922025)."
-                  : "Dibuja un poligono en el mapa para iniciar."}
-              </p>
-              {aoi && (
-                <button
-                  onClick={onTimelineAnalyze}
-                  disabled={isAnalyzing}
-                  className="mt-3 px-4 py-1.5 rounded-md text-xs font-semibold transition-colors disabled:opacity-40"
-                  style={{ backgroundColor: "#f0883e33", color: C.orange, border: `1px solid ${C.orange}44` }}
-                >
-                  Iniciar Timeline completo 2018\u21922025
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* ── Results tab ── */}
-        {activeTab === "results" && (
-          <div className="px-4 py-3">
-            {results ? (
-              <>
-                <StatsCard results={results} />
-                {/* Send report by email */}
-                <SendReportSection jobId={jobId} notifyEmail={notifyEmail} />
-              </>
-            ) : (
-              <div className="text-center py-8">
-                <p className="text-xs" style={{ color: C.text2 }}>
-                  Los resultados apareceran aqui despues de ejecutar un analisis.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── Monitoring tab (always mounted to preserve state) ── */}
+        {/* ══════════ MONITORING TAB ══════════ */}
         <div style={{ display: activeTab === "monitoring" ? undefined : "none" }} className="px-4 py-3">
           <MonitoringPanel aoi={aoi} />
         </div>
       </div>
 
-      {/* ─── Fixed bottom actions ─── */}
+      {/* ─── Fixed bottom: single unified action ─── */}
       <div className="flex-shrink-0 p-3 border-t space-y-2" style={{ borderColor: C.border, backgroundColor: C.bgBase }}>
-        {/* Status indicator */}
         {isAnalyzing && (
           <div className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ backgroundColor: C.bgCard }}>
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: C.blue }} />
               <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: C.blue }} />
             </span>
-            <span className="text-[11px]" style={{ color: C.text2 }}>Analizando...</span>
+            <span className="text-[11px]" style={{ color: C.text2 }}>Analizando {engines.length} motores × {timelineEndYear - timelineStartYear + 1} anos...</span>
           </div>
         )}
 
         <button
-          onClick={onAnalyze}
+          onClick={() => onAnalyze(timelineStartYear, timelineEndYear, timelineSeason)}
           disabled={!aoi || isAnalyzing}
-          className="w-full py-2.5 rounded-md text-sm font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110"
+          className="w-full py-2.5 rounded-lg text-sm font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98]"
           style={{ backgroundColor: C.green, color: "#fff" }}
         >
-          {!aoi ? "Dibuja un poligono" : "Analizar AOI"}
+          {!aoi
+            ? "Dibuja un poligono para iniciar"
+            : isAnalyzing
+            ? "Analizando..."
+            : `Analizar AOI (${engines.length} motores)`}
         </button>
 
-        <button
-          onClick={onTimelineAnalyze}
-          disabled={!aoi || isAnalyzing}
-          className="w-full py-2 rounded-md text-xs font-semibold border transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110"
-          style={{ borderColor: C.orange + "66", color: C.orange, backgroundColor: C.orange + "15" }}
-        >
-          Timeline completo 2018\u21922025
-        </button>
+        {!aoi && !isAnalyzing && (
+          <p className="text-[10px] text-center" style={{ color: C.text2 }}>
+            Paso 1: Dibuja o sube un poligono en el mapa
+          </p>
+        )}
       </div>
     </div>
   )

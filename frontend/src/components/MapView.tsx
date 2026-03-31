@@ -24,7 +24,7 @@ export const LAYER_REGISTRY: Record<string, LayerDef> = {
     sourceId: PREFIX + "deforestation",
     layerIds: [PREFIX + "def-fill", PREFIX + "def-line", PREFIX + "def-highlight"],
     color: "#ef4444", lineColor: "#fca5a5", opacity: 0.45,
-    popupFn: (p) => `<b style="color:#ef4444">Deforestacion</b><br>Area: ${p.area_ha ?? "?"} ha<br>Transicion a: ${p.transition_to ?? "?"}<br>Confianza: ${((p.confidence ?? 0) * 100).toFixed(0)}%`,
+    popupFn: (p) => `<b style="color:#ef4444">Deforestacion</b><br>Area: ${p.area_ha ?? "?"} ha<br>Transicion a: ${p.transition_to ?? "?"}<br>Confianza: ${((p.confidence ?? 0) * 100).toFixed(0)}%${p.co2_tonnes ? `<br><b style="color:#34d399">CO₂: ${p.co2_tonnes} t</b> (AGBD: ${p.agbd_mg_ha ?? "?"} Mg/ha)` : ""}`,
   },
   str: {
     sourceId: PREFIX + "structures",
@@ -107,6 +107,46 @@ export const LAYER_REGISTRY: Record<string, LayerDef> = {
       ? `<b style="color:#ff3b30">Agrupacion de incendios</b><br>Detecciones: ${p.detection_count ?? "?"}<br>FRP total: ${p.total_frp_mw ?? "?"} MW<br>Satelites: ${Array.isArray(p.satellites) ? p.satellites.join(", ") : (p.satellites ?? "?")}<br>Fechas: ${p.date_range ?? "?"}`
       : `<b style="color:#ff3b30">Hotspot FIRMS</b><br>FRP: ${p.frp_mw ?? "?"} MW<br>Confianza: ${p.confidence_label ?? "?"}<br>Satelite: ${p.satellite ?? "?"}<br>Fecha: ${p.acq_datetime ?? "?"}<br>Fuente: ${p.source ?? "?"}`,
   },
+  avocado: {
+    sourceId: PREFIX + "avocado",
+    layerIds: [PREFIX + "avocado-fill", PREFIX + "avocado-line", PREFIX + "avocado-highlight"],
+    color: "#a855f7", lineColor: "#c084fc", opacity: 0.5,
+    fillMode: "match",
+    matchExpr: ["match", ["get", "severity"],
+      "critica", "#dc2626",
+      "alta", "#f97316",
+      "media", "#facc15",
+      "baja", "#a3e635",
+      "#a855f7"],
+    popupFn: (p) => `<b style="color:#a855f7">Anomalía NDVI (AVOCADO)</b><br>Severidad: ${p.severity ?? "?"}<br>Área: ${(p.area_ha ?? 0).toFixed(2)} ha<br>ΔNDVI promedio: ${(p.mean ?? 0).toFixed(3)}<br>ΔNDVI mín: ${(p.min ?? 0).toFixed(3)}`,
+  },
+  spectralgpt: {
+    sourceId: PREFIX + "spectralgpt",
+    layerIds: [PREFIX + "spectralgpt-fill", PREFIX + "spectralgpt-line", PREFIX + "spectralgpt-highlight"],
+    color: "#14b8a6", lineColor: "#5eead4", opacity: 0.5,
+    fillMode: "match",
+    matchExpr: ["match", ["get", "class"],
+      "bosque_denso", "#166534", "bosque_ralo", "#22c55e",
+      "pastizal", "#86efac", "cultivos", "#e49635",
+      "matorral", "#dfc35a", "urbano", "#6b21a8",
+      "suelo", "#92400e", "agua", "#3b82f6",
+      "manglar_inundado", "#7a87c6", "quemado", "#7c2d12",
+      "#14b8a6"],
+    popupFn: (p) => `<b style="color:#14b8a6">SpectralGPT LULC</b><br>Clase: ${p.class ?? "?"}<br>Área: ${p.area_ha ?? "?"} ha<br>Confianza: ${((p.confidence ?? 0) * 100).toFixed(0)}%<br>Modelo: ${p.model ?? "?"}`,
+  },
+  drivers_mx: {
+    sourceId: PREFIX + "drivers_mx",
+    layerIds: [PREFIX + "drivers_mx-fill", PREFIX + "drivers_mx-line", PREFIX + "drivers_mx-highlight"],
+    color: "#c084fc", lineColor: "#e9d5ff", opacity: 0.55,
+    fillMode: "match",
+    matchExpr: ["match", ["get", "driver_mx"],
+      "ganaderia", "#d97706", "agricultura", "#65a30d",
+      "expansion_urbana", "#f43f5e", "incendio", "#ef4444",
+      "tala_ilegal", "#7c3aed", "infraestructura", "#6b7280",
+      "plantacion", "#059669", "natural", "#0ea5e9",
+      "#c084fc"],
+    popupFn: (p) => `<b style="color:#c084fc">ForestNet-MX</b><br>Driver: ${p.driver_mx_label ?? p.driver_mx ?? "?"}<br>Área: ${p.area_ha ?? "?"} ha`,
+  },
 }
 
 /** Engine key → backend result key mapping */
@@ -114,6 +154,7 @@ const ENGINE_TO_RESULT: Record<string, string> = {
   def: "deforestation", str: "structures", veg: "vegetation", ue: "urban_expansion",
   hansen: "hansen", alerts: "alerts", drivers: "drivers", fire: "fire",
   anp: "legal_context", sar: "sar", firms_hotspots: "firms_hotspots",
+  drivers_mx: "deforestation",
 }
 
 const ALL_LAYER_IDS = Object.values(LAYER_REGISTRY).flatMap((r) => r.layerIds)

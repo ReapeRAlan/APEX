@@ -146,9 +146,16 @@ class GEEService:
         end_date: str,
         job_id: str = "test",
         cloud_cover_threshold: int = 20,
+        on_progress=None,
     ) -> Path:
         import time as _time
         _t0 = _time.monotonic()
+        def _prog(msg):
+            elapsed = _time.monotonic() - _t0
+            full = f"[S2 {elapsed:.0f}s] {msg}"
+            print(f"[GEE] {full}", flush=True)
+            if on_progress:
+                on_progress(full)
         coords = self._extract_coords(aoi_geojson)
 
         # ── AOI-aware cache ──
@@ -163,9 +170,9 @@ class GEEService:
             try:
                 cached = json.loads(meta_path.read_text())
                 if cached.get("aoi_hash") == aoi_hash and cached.get("start_date") == start_date and cached.get("end_date") == end_date:
-                    print(f"[GEE] S2 cache válido (AOI hash {aoi_hash[:8]}…) → {output_path}")
+                    _prog(f"Cache valido (hash {aoi_hash[:8]}) -> skip download")
                     return output_path
-                print(f"[GEE] S2 cache INVÁLIDO (hash {cached.get('aoi_hash','?')[:8]} ≠ {aoi_hash[:8]}), re-descargando")
+                _prog(f"Cache INVALIDO (hash mismatch), re-descargando")
             except Exception:
                 pass
             output_path.unlink(missing_ok=True)
@@ -189,6 +196,7 @@ class GEEService:
         composite = collection.median().clip(aoi)
 
         # Índices espectrales
+        _prog("Construyendo composite + indices espectrales...")
         ndvi = composite.normalizedDifference(["B8", "B4"]).rename("NDVI")
         gndvi = composite.normalizedDifference(["B8", "B3"]).rename("GNDVI")
         ndwi = composite.normalizedDifference(["B3", "B8"]).rename("NDWI")
@@ -199,11 +207,14 @@ class GEEService:
 
         # Partir el AOI en tiles manejables — ahora a 10m nativo
         tiles = self._split_bbox(coords, n_bands)
+        _prog(f"AOI dividida en {len(tiles)} tile(s) a {SCALE}m")
         print(f"[GEE] S2@{SCALE}m — AOI dividida en {len(tiles)} tile(s)")
 
         if len(tiles) == 1:
             # Un solo tile, descarga directa
+            _prog("Descargando tile unico de GEE...")
             self._download_tile(composite, tiles[0], output_path)
+            _prog("Tile descargado OK")
         else:
             # Descargar cada tile y fusionar con rasterio
             tile_paths = []
@@ -211,11 +222,13 @@ class GEEService:
             tile_dir.mkdir(parents=True, exist_ok=True)
             for idx, tile_geom in enumerate(tiles):
                 tp = tile_dir / f"tile_{idx:03d}.tif"
+                _prog(f"Descargando tile {idx+1}/{len(tiles)}...")
                 print(f"[GEE]   Descargando tile {idx+1}/{len(tiles)} …")
                 self._download_tile(composite, tile_geom, tp)
                 tile_paths.append(tp)
 
             # Merge
+            _prog(f"Fusionando {len(tile_paths)} tiles...")
             print("[GEE] Fusionando tiles …")
             datasets = [rasterio.open(p) for p in tile_paths]
             mosaic, out_transform = rio_merge(datasets)
@@ -239,6 +252,7 @@ class GEEService:
             shutil.rmtree(tile_dir, ignore_errors=True)
 
         # ---- Clip to AOI polygon (not just bbox) ----
+        _prog("Recortando al poligono AOI...")
         clipped_path = output_path.parent / (output_path.stem + "_clipped.tif")
         with rasterio.open(output_path) as src:
             out_image, out_transform = rio_mask(src, [aoi_geojson], crop=True, nodata=0)
@@ -274,7 +288,8 @@ class GEEService:
     DW_MAX_TILE_PX = 750
 
     def get_dynamic_world_classification(
-        self, aoi_geojson: dict, start_date: str, end_date: str, job_id: str = "test"
+        self, aoi_geojson: dict, start_date: str, end_date: str, job_id: str = "test",
+        on_progress=None,
     ) -> Path:
         """
         Descarga clasificacion Dynamic World de Google para el AOI.
@@ -282,6 +297,12 @@ class GEEService:
         """
         import time as _time
         _t0 = _time.monotonic()
+        def _prog(msg):
+            elapsed = _time.monotonic() - _t0
+            full = f"[DW {elapsed:.0f}s] {msg}"
+            print(f"[GEE] {full}", flush=True)
+            if on_progress:
+                on_progress(full)
         self.initialize()
 
         # Log de diagnóstico — coordenadas solicitadas
@@ -309,9 +330,9 @@ class GEEService:
             try:
                 cached = json.loads(meta_path.read_text())
                 if cached.get("aoi_hash") == aoi_hash and cached.get("start_date") == start_date and cached.get("end_date") == end_date:
-                    print(f"[DW] Cache válido (AOI hash {aoi_hash[:8]}…) → {final_path}")
+                    _prog(f"Cache valido (hash {aoi_hash[:8]}) -> skip download")
                     return final_path
-                print(f"[DW] Cache INVÁLIDO (hash {cached.get('aoi_hash','?')[:8]} ≠ {aoi_hash[:8]}), re-descargando")
+                _prog(f"Cache INVALIDO, re-descargando")
             except Exception:
                 pass
             final_path.unlink(missing_ok=True)
@@ -330,7 +351,7 @@ class GEEService:
             .filter(col_filter)
             .select(prob_bands)
         )
-        # Verificar que hay imágenes en el rango solicitado
+        _prog(f"Verificando imagenes: {start_date} a {end_date}")
         count = _gee_call_with_timeout(
             lambda: dw_col.size().getInfo(), _GEE_GETINFO_TIMEOUT, "DW",
         )
@@ -348,6 +369,7 @@ class GEEService:
             )
             if count == 0:
                 raise ValueError(f"Sin imágenes DW para {start_date}–{end_date} ni con margen de 30 días")
+        _prog(f"{count} imagenes DW disponibles")
         print(f"[DW] {count} imagenes disponibles para el periodo")
         # Probabilidad media por clase
         prob_composite = dw_col.reduce(ee.Reducer.mean())
@@ -358,6 +380,7 @@ class GEEService:
 
         n_bands = len(prob_bands)  # 9 probs (label computed post-download in numpy)
         tiles = self._split_bbox_dw(coords)
+        _prog(f"Descargando {len(tiles)} tile(s) a {self.DW_SCALE}m...")
 
         tile_dir = output_dir / f"{job_id}_dw_tiles"
         tile_dir.mkdir(exist_ok=True)
@@ -567,6 +590,7 @@ class GEEService:
         )
         tif_path = output_dir / f"{job_id}_tile_{idx}.tif"
         tif_path.write_bytes(tif_bytes)
+        print(f"[computePixels] Tile {idx} descargado: {len(tif_bytes)/1024:.0f}KB", flush=True)
 
         # Verificar bounds del tile descargado
         with rasterio.open(tif_path) as src:
@@ -735,14 +759,20 @@ class GEEService:
 
     def _download_tile_at_scale(self, image, region, output_path: Path, scale: int):
         """Descarga un tile de imagen a la escala indicada."""
+        import time as _time
+        _t0 = _time.monotonic()
+        print(f"[GEE-DL] Solicitando URL ({output_path.name}, scale={scale}m)...", flush=True)
         url = image.getDownloadURL({
             "region": region, "scale": scale, "format": "GEO_TIFF",
         })
+        print(f"[GEE-DL] URL obtenida en {_time.monotonic()-_t0:.1f}s, descargando...", flush=True)
         resp = requests.get(url, stream=True, timeout=300)
         resp.raise_for_status()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
             shutil.copyfileobj(resp.raw, tmp)
             tmp_path = tmp.name
+        file_size = os.path.getsize(tmp_path)
+        print(f"[GEE-DL] Descargado {file_size/1024:.0f}KB en {_time.monotonic()-_t0:.1f}s", flush=True)
         try:
             with zipfile.ZipFile(tmp_path, "r") as zf:
                 tiffs = [n for n in zf.namelist() if n.endswith(".tif")]
@@ -756,6 +786,7 @@ class GEEService:
             shutil.move(tmp_path, output_path)
             return
         os.remove(tmp_path)
+        print(f"[GEE-DL] Tile guardado: {output_path.name} ({_time.monotonic()-_t0:.1f}s)", flush=True)
 
     # ------------------------------------------------------------------
     # Temporal stack (4 estaciones)
@@ -829,15 +860,23 @@ class GEEService:
 
     def _download_tile(self, image, region, output_path: Path):
         """Descarga un recorte de la imagen como GeoTIFF."""
+        import time as _time
+        _t0 = _time.monotonic()
+        print(f"[GEE-DL] Solicitando URL de descarga para {output_path.name}...", flush=True)
         url = image.getDownloadURL(
             {"region": region, "scale": SCALE, "format": "GEO_TIFF"}
         )
+        _t_url = _time.monotonic() - _t0
+        print(f"[GEE-DL] URL obtenida en {_t_url:.1f}s, descargando bytes...", flush=True)
         resp = requests.get(url, stream=True, timeout=300)
         resp.raise_for_status()
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
             shutil.copyfileobj(resp.raw, tmp)
             tmp_path = tmp.name
+        _t_dl = _time.monotonic() - _t0
+        file_size = os.path.getsize(tmp_path)
+        print(f"[GEE-DL] Descargado {file_size/1024:.0f}KB en {_t_dl:.1f}s", flush=True)
 
         # GEE puede responder con un ZIP o directamente con un TIFF
         try:
@@ -856,3 +895,4 @@ class GEEService:
             return
 
         os.remove(tmp_path)
+        print(f"[GEE-DL] Tile guardado: {output_path.name} ({_time.monotonic()-_t0:.1f}s total)", flush=True)

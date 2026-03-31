@@ -22,6 +22,7 @@ from shapely.ops import unary_union
 from shapely.affinity import translate
 
 from ..db.session import DATABASE_URL
+from .convlstm_model import forecast_convlstm as _run_convlstm, train_convlstm as _train_convlstm_model
 
 logger = logging.getLogger("apex.forecast")
 
@@ -44,13 +45,16 @@ IRREVERSIBILITY = {"tala": 0.7, "cus_inmobiliario": 0.95, "frontera_agricola": 0
 
 _MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 _RF_MODEL_PATH = os.path.join(_MODEL_DIR, "forecast_rf.pkl")
+_CONVLSTM_MODEL_PATH = os.path.join(_MODEL_DIR, "forecast_convlstm.pt")
 
+# 4-layer ensemble weights: (trend, ml/RF, pomdp, convlstm)
+# ConvLSTM becomes dominant at longer horizons (spatial-temporal awareness)
 ENSEMBLE_WEIGHTS = {
-    1: (0.50, 0.35, 0.15),
-    2: (0.35, 0.40, 0.25),
-    3: (0.20, 0.40, 0.40),
-    4: (0.10, 0.30, 0.60),
-    5: (0.05, 0.25, 0.70),
+    1: (0.35, 0.20, 0.10, 0.35),
+    2: (0.25, 0.20, 0.15, 0.40),
+    3: (0.15, 0.15, 0.25, 0.45),
+    4: (0.08, 0.12, 0.30, 0.50),
+    5: (0.05, 0.10, 0.35, 0.50),
 }
 
 FEATURE_COLS = [
@@ -589,6 +593,53 @@ def _forecast_pomdp(series: list[dict], horizon: int) -> dict:
     return {"available": True, "method": "pomdp_rollout", "predictions": predictions}
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Layer 4 — ConvLSTM Spatiotemporal Forecast
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _forecast_convlstm(series: list[dict], horizon: int) -> dict:
+    """Run ConvLSTM spatiotemporal forecast."""
+    if not series or len(series) < 4:
+        return {"available": False, "reason": "Se necesitan al menos 4 años para ConvLSTM"}
+
+    if not os.path.exists(_CONVLSTM_MODEL_PATH):
+        return {"available": False, "reason": "Modelo ConvLSTM no entrenado. Ejecuta /forecast/train-convlstm primero."}
+
+    try:
+        result = _run_convlstm(
+            series=series,
+            horizon=horizon,
+        )
+        return {"available": True, "method": "convlstm", "predictions": result["predictions"]}
+    except Exception as exc:
+        logger.warning("ConvLSTM forecast failed: %s", exc)
+        return {"available": False, "reason": str(exc)}
+
+
+def train_convlstm_model(job_id: str = None) -> dict:
+    """Train the ConvLSTM model from timeline data."""
+    if not job_id:
+        job_id = _find_latest_timeline_job()
+    if not job_id:
+        return {"status": "error", "detail": "No hay análisis temporal disponible."}
+
+    series = _extract_timeline_series(job_id)
+    if not series or len(series) < 5:
+        return {"status": "error", "detail": f"Insuficientes datos: {len(series or [])} años (mínimo 5)."}
+
+    try:
+        os.makedirs(_MODEL_DIR, exist_ok=True)
+        result = _train_convlstm_model(
+            all_series=[series],
+        )
+        logger.info("ConvLSTM trained: %s", result)
+        return {"status": "ok", **result}
+    except Exception as exc:
+        logger.error("ConvLSTM training failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  Ensemble
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -597,7 +648,7 @@ def _compute_ensemble(layers: dict, horizon: int, base_year: int) -> dict:
     predictions = []
     for h in range(1, horizon + 1):
         values = {}
-        for name in ("trend", "ml", "pomdp"):
+        for name in ("trend", "ml", "pomdp", "convlstm"):
             layer = layers.get(name, {})
             if layer.get("available") and layer.get("predictions"):
                 preds = layer["predictions"]
@@ -608,8 +659,8 @@ def _compute_ensemble(layers: dict, horizon: int, base_year: int) -> dict:
             predictions.append({"year": base_year + h, "deforestation_ha": 0, "risk": RISK_LOW})
             continue
 
-        weights = ENSEMBLE_WEIGHTS.get(h, (0.33, 0.34, 0.33))
-        w_map = {"trend": weights[0], "ml": weights[1], "pomdp": weights[2]}
+        weights = ENSEMBLE_WEIGHTS.get(h, (0.25, 0.25, 0.25, 0.25))
+        w_map = {"trend": weights[0], "ml": weights[1], "pomdp": weights[2], "convlstm": weights[3]}
         total_w = sum(w_map[k] for k in values)
         if total_w < 1e-9:
             total_w = 1.0
@@ -645,16 +696,32 @@ def forecast_from_timeline(
         if not job_id:
             return {
                 "status": "no_data",
-                "detail": "No hay anÃ¡lisis temporal completado. "
-                          "Ejecuta primero un anÃ¡lisis Timeline.",
+                "detail": "No hay an\u00e1lisis temporal completado. "
+                          "Ejecuta primero un an\u00e1lisis Timeline.",
             }
+
+    # Check if job is still running
+    try:
+        db_path = _get_db_path()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        conn.close()
+        if row and row["status"] in ("queued", "running"):
+            return {
+                "status": "no_data",
+                "detail": f"El timeline {job_id[:8]} a\u00fan est\u00e1 en proceso. "
+                          "Espera a que termine antes de ejecutar la predicci\u00f3n.",
+            }
+    except Exception:
+        pass
 
     series = _extract_timeline_series(job_id)
     if not series:
         return {
             "status": "no_data",
             "detail": "No se encontraron datos de timeline para "
-                      f"job {job_id[:8]}. Ejecuta un anÃ¡lisis Timeline primero.",
+                      f"job {job_id[:8]}. Ejecuta un an\u00e1lisis Timeline primero.",
         }
 
     base_year = series[-1]["year"]
@@ -676,6 +743,9 @@ def forecast_from_timeline(
 
     if method in ("pomdp", "ensemble"):
         result["pomdp"] = _forecast_pomdp(series, horizon)
+
+    if method in ("convlstm", "ensemble"):
+        result["convlstm"] = _forecast_convlstm(series, horizon)
 
     if method == "ensemble":
         result["ensemble"] = _compute_ensemble(result, horizon, base_year)
@@ -724,11 +794,16 @@ def get_forecast_status() -> dict:
     except Exception:
         pass
 
+    convlstm_exists = os.path.exists(_CONVLSTM_MODEL_PATH)
+    convlstm_size = os.path.getsize(_CONVLSTM_MODEL_PATH) if convlstm_exists else 0
+
     return {
         "engine": "forecast_v2",
-        "layers": ["trend", "ml", "pomdp"],
+        "layers": ["trend", "ml", "pomdp", "convlstm"],
         "ml_model_trained": model_exists,
         "ml_model_size_kb": round(model_size / 1024, 1) if model_exists else 0,
+        "convlstm_model_trained": convlstm_exists,
+        "convlstm_model_size_kb": round(convlstm_size / 1024, 1) if convlstm_exists else 0,
         "timeline_jobs": timeline_jobs,
         "year_records": total_year_records,
     }

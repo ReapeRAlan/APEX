@@ -1176,6 +1176,106 @@ class APEXPDFReportGenerator:
         ))
         return story
 
+    # ── Biomass / CO₂ section ──
+    def _build_biomass_section(self, summary: dict) -> list:
+        cumulative = summary.get("cumulative", {})
+        biomass = cumulative.get("biomass_gedi", {})
+        if not biomass and not cumulative.get("total_co2_tonnes"):
+            return []
+        story: list = []
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Biomasa y Emisiones de CO₂ (GEDI L4B)", self.styles["SectionHead"]))
+        mean_agb = _to_float(biomass.get("mean_agb_Mg_ha", 0))
+        total_co2 = _to_float(cumulative.get("total_co2_tonnes", 0))
+        story.append(Paragraph(
+            f"La biomasa aérea promedio estimada mediante datos GEDI L4B es de "
+            f"<b>{mean_agb:,.1f} Mg/ha</b>. La pérdida forestal acumulada implica emisiones estimadas "
+            f"de <b>{total_co2:,.1f} toneladas de CO₂</b> (factor de conversión: AGB × 0.47 × 3.67).",
+            self.styles["Body"],
+        ))
+        story.append(Paragraph(
+            "Fuente: GEDI L4B (NASA/UMD) — resolución 1 km, período 2019-2023",
+            self.styles["Small"],
+        ))
+        return story
+
+    # ── ForestNet-MX Drivers section ──
+    def _build_forestnet_mx_section(self, summary: dict) -> list:
+        cumulative = summary.get("cumulative", {})
+        drivers_mx = cumulative.get("drivers_mx", {})
+        if not drivers_mx:
+            return []
+        story: list = []
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Causales de Deforestación (ForestNet-MX)", self.styles["SectionHead"]))
+        driver_dist = drivers_mx.get("driver_distribution", {})
+        if driver_dist:
+            lines = []
+            for drv, pct in sorted(driver_dist.items(), key=lambda x: -x[1]):
+                lines.append(f"• <b>{drv}</b>: {pct:.1f}%")
+            story.append(Paragraph("<br/>".join(lines), self.styles["Body"]))
+        story.append(Paragraph(
+            f"Modelo adaptado a México con {drivers_mx.get('n_features', 'N/D')} polígonos analizados. "
+            f"Categorías: agricultura, ganadería, minería, urbanización, incendio, caminos, plantación, otro.",
+            self.styles["Body"],
+        ))
+        story.append(Paragraph(
+            "Fuente: ForestNet adaptado con datos CONAFOR/INEGI para México",
+            self.styles["Small"],
+        ))
+        return story
+
+    # ── AVOCADO Anomalies section ──
+    def _build_avocado_section(self, summary: dict) -> list:
+        cumulative = summary.get("cumulative", {})
+        avocado = cumulative.get("avocado", {})
+        if not avocado:
+            return []
+        story: list = []
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Detección de Anomalías Ambientales (AVOCADO)", self.styles["SectionHead"]))
+        n = avocado.get("n_anomalies", 0)
+        area = _to_float(avocado.get("total_anomaly_ha", 0))
+        story.append(Paragraph(
+            f"Se detectaron <b>{n}</b> anomalías de cambio en vegetación que cubren "
+            f"<b>{area:,.2f} ha</b>, identificadas mediante análisis de series temporales NDVI "
+            f"con Z-score > 2 desviaciones estándar respecto al historial.",
+            self.styles["Body"],
+        ))
+        story.append(Paragraph(
+            "Fuente: Sentinel-2 NDVI time series, método de detección de outliers estadísticos",
+            self.styles["Small"],
+        ))
+        return story
+
+    # ── SpectralGPT LULC section ──
+    def _build_spectralgpt_section(self, summary: dict) -> list:
+        cumulative = summary.get("cumulative", {})
+        spgpt = cumulative.get("spectralgpt", {})
+        if not spgpt:
+            return []
+        story: list = []
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Clasificación de Uso de Suelo (SpectralGPT+)", self.styles["SectionHead"]))
+        classes = spgpt.get("classes", {})
+        if classes:
+            lines = []
+            for cls_name, area in sorted(classes.items(), key=lambda x: -x[1]):
+                lines.append(f"• <b>{cls_name}</b>: {area:,.2f} ha")
+            story.append(Paragraph("<br/>".join(lines), self.styles["Body"]))
+        model_mode = spgpt.get("model_mode", "heuristic")
+        story.append(Paragraph(
+            f"Clasificación generada con modelo SpectralGPT+ (modo: {model_mode}), "
+            f"10 clases LULC con validación cruzada heurística. "
+            f"Total: {spgpt.get('n_features', 'N/D')} polígonos clasificados.",
+            self.styles["Body"],
+        ))
+        story.append(Paragraph(
+            "Fuente: SpectralGPT+ (ViT MAE pre-entrenado) + ensemble heurístico, Sentinel-2 L2A",
+            self.styles["Small"],
+        ))
+        return story
+
     # ── 2. Alerts ──
     def _build_alerts(self, anomalies: list) -> list:
         story: list = []
@@ -1509,6 +1609,10 @@ class APEXPDFReportGenerator:
         story += self._build_sar_section(summary)
         story += self._build_crossval_section(summary)
         story += self._build_firms_section(summary)
+        story += self._build_biomass_section(summary)
+        story += self._build_forestnet_mx_section(summary)
+        story += self._build_avocado_section(summary)
+        story += self._build_spectralgpt_section(summary)
         story += self._build_alerts(anomalies)
         if timeline:
             story += self._build_annual_data(timeline)
@@ -2085,6 +2189,77 @@ class APEXWordReportGenerator:
         )
         doc.add_paragraph("")
 
+    def _add_biomass_section(self, doc: Document, summary: dict, cumulative: dict):
+        biomass = cumulative.get("biomass_gedi", {})
+        if not biomass and not cumulative.get("total_co2_tonnes"):
+            return
+        doc.add_paragraph("Biomasa y Emisiones de CO₂ (GEDI L4B)", style="APEXHeading")
+        mean_agb = _to_float(biomass.get("mean_agb_Mg_ha", 0))
+        total_co2 = _to_float(cumulative.get("total_co2_tonnes", 0))
+        p = doc.add_paragraph(style="APEXBody")
+        p.add_run(
+            f"La biomasa aérea promedio estimada mediante datos GEDI L4B es de "
+            f"{mean_agb:,.1f} Mg/ha. La pérdida forestal acumulada implica emisiones estimadas "
+            f"de {total_co2:,.1f} toneladas de CO₂ (factor de conversión: AGB × 0.47 × 3.67)."
+        )
+        src = doc.add_paragraph(style="APEXSmall")
+        src.add_run("Fuente: GEDI L4B (NASA/UMD) — resolución 1 km, período 2019-2023")
+        doc.add_paragraph("")
+
+    def _add_forestnet_mx_section(self, doc: Document, summary: dict, cumulative: dict):
+        drivers_mx = cumulative.get("drivers_mx", {})
+        if not drivers_mx:
+            return
+        doc.add_paragraph("Causales de Deforestación (ForestNet-MX)", style="APEXHeading")
+        driver_dist = drivers_mx.get("driver_distribution", {})
+        if driver_dist:
+            for drv, pct in sorted(driver_dist.items(), key=lambda x: -x[1]):
+                doc.add_paragraph(f"{drv}: {pct:.1f}%", style="List Bullet")
+        p = doc.add_paragraph(style="APEXBody")
+        p.add_run(
+            f"Modelo adaptado a México con {drivers_mx.get('n_features', 'N/D')} polígonos analizados."
+        )
+        src = doc.add_paragraph(style="APEXSmall")
+        src.add_run("Fuente: ForestNet adaptado con datos CONAFOR/INEGI para México")
+        doc.add_paragraph("")
+
+    def _add_avocado_section(self, doc: Document, summary: dict, cumulative: dict):
+        avocado = cumulative.get("avocado", {})
+        if not avocado:
+            return
+        doc.add_paragraph("Detección de Anomalías Ambientales (AVOCADO)", style="APEXHeading")
+        n = avocado.get("n_anomalies", 0)
+        area = _to_float(avocado.get("total_anomaly_ha", 0))
+        p = doc.add_paragraph(style="APEXBody")
+        p.add_run(
+            f"Se detectaron {n} anomalías de cambio en vegetación que cubren "
+            f"{area:,.2f} ha, identificadas mediante análisis de series temporales NDVI "
+            f"con Z-score > 2 desviaciones estándar respecto al historial."
+        )
+        src = doc.add_paragraph(style="APEXSmall")
+        src.add_run("Fuente: Sentinel-2 NDVI time series, método de detección de outliers estadísticos")
+        doc.add_paragraph("")
+
+    def _add_spectralgpt_section(self, doc: Document, summary: dict, cumulative: dict):
+        spgpt = cumulative.get("spectralgpt", {})
+        if not spgpt:
+            return
+        doc.add_paragraph("Clasificación de Uso de Suelo (SpectralGPT+)", style="APEXHeading")
+        classes = spgpt.get("classes", {})
+        if classes:
+            for cls_name, area in sorted(classes.items(), key=lambda x: -x[1]):
+                doc.add_paragraph(f"{cls_name}: {area:,.2f} ha", style="List Bullet")
+        model_mode = spgpt.get("model_mode", "heuristic")
+        p = doc.add_paragraph(style="APEXBody")
+        p.add_run(
+            f"Clasificación generada con modelo SpectralGPT+ (modo: {model_mode}), "
+            f"10 clases LULC con validación cruzada heurística. "
+            f"Total: {spgpt.get('n_features', 'N/D')} polígonos clasificados."
+        )
+        src = doc.add_paragraph(style="APEXSmall")
+        src.add_run("Fuente: SpectralGPT+ (ViT MAE pre-entrenado) + ensemble heurístico, Sentinel-2 L2A")
+        doc.add_paragraph("")
+
     def _add_alerts(self, doc: Document, anomalies: list):
         doc.add_paragraph("2. Alertas y Anomalías", style="APEXHeading")
         if not anomalies:
@@ -2346,6 +2521,10 @@ class APEXWordReportGenerator:
         self._add_sar_section(doc, summary)
         self._add_crossval_section(doc, summary)
         self._add_firms_section(doc, summary)
+        self._add_biomass_section(doc, summary, cumulative)
+        self._add_forestnet_mx_section(doc, summary, cumulative)
+        self._add_avocado_section(doc, summary, cumulative)
+        self._add_spectralgpt_section(doc, summary, cumulative)
         self._add_alerts(doc, anomalies)
         if timeline:
             self._add_annual_data(doc, timeline)

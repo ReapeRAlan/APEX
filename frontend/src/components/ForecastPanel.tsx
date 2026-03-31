@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { API_BASE_URL } from "../config"
 
 const C = {
@@ -24,10 +24,11 @@ const RISK_COLORS: Record<string, string> = {
 }
 
 const METHOD_LABELS: Record<string, string> = {
-  ensemble: "Ensemble (3 capas)",
+  ensemble: "Ensemble (4 capas)",
   trend: "Tendencia lineal",
   ml: "Machine Learning",
   pomdp: "POMDP Rollout",
+  convlstm: "ConvLSTM Espaciotemporal",
 }
 
 interface YearEntry {
@@ -70,6 +71,7 @@ interface ForecastResult {
   trend?: { available: boolean; slope_ha_yr?: number; r_squared?: number; predictions?: Prediction[] }
   ml?: { available: boolean; predictions?: Prediction[] }
   pomdp?: { available: boolean; predictions?: Prediction[] }
+  convlstm?: { available: boolean; reason?: string; predictions?: Prediction[] }
   ensemble?: { available: boolean; predictions?: Prediction[] }
   spatial_forecast?: { deforestation?: any; urban_expansion?: any }
 }
@@ -78,6 +80,8 @@ interface EngineStatus {
   engine: string
   ml_model_trained: boolean
   ml_model_size_kb: number
+  convlstm_model_trained?: boolean
+  convlstm_model_size_kb?: number
   timeline_jobs: number
   year_records: number
 }
@@ -90,15 +94,19 @@ interface ForecastPanelProps {
   onClearForecast?: () => void
 }
 
-export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialForecast, onClearForecast }: ForecastPanelProps) {
+export default function ForecastPanel({ token, aoi: _aoi, timelineJobId, onSpatialForecast, onClearForecast }: ForecastPanelProps) {
   const [horizon, setHorizon] = useState(3)
   const [method, setMethod] = useState("ensemble")
   const [result, setResult] = useState<ForecastResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<EngineStatus | null>(null)
+  const [tlStatus, setTlStatus] = useState<"none" | "running" | "completed" | "failed">("none")
+  const tlPollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [training, setTraining] = useState(false)
   const [trainResult, setTrainResult] = useState<any>(null)
+  const [trainingConvlstm, setTrainingConvlstm] = useState(false)
+  const [trainConvlstmResult, setTrainConvlstmResult] = useState<any>(null)
   const [showOnMap, setShowOnMap] = useState(true)
 
   const headers: Record<string, string> = { "Content-Type": "application/json" }
@@ -117,6 +125,35 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
     setResult(null)
     setError(null)
     if (onClearForecast) onClearForecast()
+
+    // Poll timeline job status
+    if (tlPollRef.current) clearTimeout(tlPollRef.current)
+    if (!timelineJobId) { setTlStatus("none"); return }
+    setTlStatus("running")
+
+    const pollTl = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/jobs/${timelineJobId}`, { headers })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === "completed") {
+          setTlStatus("completed")
+          // Refresh engine status after timeline completes
+          fetch(`${API_BASE_URL}/api/forecast/status`, { headers })
+            .then((r) => r.json())
+            .then(setStatus)
+            .catch(() => {})
+          return
+        }
+        if (data.status === "failed") { setTlStatus("failed"); return }
+        // Still running — poll again
+        tlPollRef.current = setTimeout(pollTl, 5000)
+      } catch {
+        tlPollRef.current = setTimeout(pollTl, 5000)
+      }
+    }
+    pollTl()
+    return () => { if (tlPollRef.current) clearTimeout(tlPollRef.current) }
   }, [timelineJobId])
 
   const runForecast = useCallback(async () => {
@@ -172,6 +209,25 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
     }
   }
 
+  const handleTrainConvlstm = async () => {
+    setTrainingConvlstm(true)
+    setTrainConvlstmResult(null)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/forecast/train-convlstm`, {
+        method: "POST",
+        headers,
+      })
+      const data = await res.json()
+      setTrainConvlstmResult(data)
+      const s = await fetch(`${API_BASE_URL}/api/forecast/status`, { headers })
+      setStatus(await s.json())
+    } catch {
+      setTrainConvlstmResult({ status: "error", detail: "Error de red" })
+    } finally {
+      setTrainingConvlstm(false)
+    }
+  }
+
   // ── Sparkline mini chart ──
   const Sparkline = ({ values, color }: { values: number[]; color?: string }) => {
     if (!values?.length) return null
@@ -219,13 +275,17 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
         {/* Timeline job indicator */}
         <div className="flex items-center gap-1.5 text-[10px]">
           <span
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: timelineJobId ? C.green : C.yellow }}
+            className={`w-1.5 h-1.5 rounded-full${tlStatus === "running" ? " animate-pulse" : ""}`}
+            style={{ backgroundColor: tlStatus === "completed" ? C.green : tlStatus === "running" ? C.yellow : tlStatus === "failed" ? C.red : C.text2 }}
           />
           <span style={{ color: C.text2 }}>
-            {timelineJobId
-              ? `Timeline: ${timelineJobId.slice(0, 8)}…`
-              : "Sin análisis timeline (usa el último disponible)"}
+            {!timelineJobId
+              ? "Sin an\u00e1lisis timeline (usa el \u00faltimo disponible)"
+              : tlStatus === "running"
+              ? `Timeline ${timelineJobId.slice(0, 8)}\u2026 en proceso`
+              : tlStatus === "failed"
+              ? `Timeline ${timelineJobId.slice(0, 8)}\u2026 fall\u00f3`
+              : `Timeline: ${timelineJobId.slice(0, 8)}\u2026`}
           </span>
         </div>
 
@@ -272,11 +332,11 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
         {/* Run button */}
         <button
           onClick={runForecast}
-          disabled={loading}
+          disabled={loading || tlStatus === "running"}
           className="w-full py-1.5 rounded text-xs font-medium transition-colors disabled:opacity-40"
           style={{ backgroundColor: C.purple, color: "#fff" }}
         >
-          {loading ? "Calculando…" : "Ejecutar Predicción"}
+          {loading ? "Calculando\u2026" : tlStatus === "running" ? "Esperando timeline\u2026" : "Ejecutar Predicci\u00f3n"}
         </button>
 
         {/* Show on map toggle */}
@@ -328,6 +388,10 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
               <span style={{ color: status.ml_model_trained ? C.green : C.yellow }}>
                 {status.ml_model_trained ? `Entrenado (${status.ml_model_size_kb} KB)` : "Sin entrenar"}
               </span>
+              <span style={{ color: C.text2 }}>ConvLSTM:</span>
+              <span style={{ color: status.convlstm_model_trained ? C.green : C.yellow }}>
+                {status.convlstm_model_trained ? `Entrenado (${status.convlstm_model_size_kb} KB)` : "Sin entrenar"}
+              </span>
             </div>
             <button
               onClick={handleTrain}
@@ -342,6 +406,21 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
                 {trainResult.status === "ok"
                   ? `OK — MAE: ${trainResult.mae}, R²: ${trainResult.r2}, ${trainResult.samples} muestras`
                   : `Error: ${trainResult.detail}`}
+              </div>
+            )}
+            <button
+              onClick={handleTrainConvlstm}
+              disabled={trainingConvlstm || status.year_records < 5}
+              className="w-full mt-1 py-1 rounded text-[10px] font-medium transition-colors"
+              style={{ backgroundColor: C.bgBase, border: `1px solid ${C.border}`, color: C.text2 }}
+            >
+              {trainingConvlstm ? "Entrenando ConvLSTM…" : "Entrenar ConvLSTM"}
+            </button>
+            {trainConvlstmResult && (
+              <div className="text-[10px] mt-1" style={{ color: trainConvlstmResult.status === "ok" ? C.green : C.red }}>
+                {trainConvlstmResult.status === "ok"
+                  ? `OK — ${trainConvlstmResult.epochs || ""} epochs, loss: ${trainConvlstmResult.final_loss?.toFixed(4) ?? "—"}`
+                  : `Error: ${trainConvlstmResult.detail}`}
               </div>
             )}
           </div>
@@ -517,7 +596,7 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
                 <div className="text-[10px] font-semibold uppercase mb-1.5" style={{ color: C.text2 }}>
                   Capas del ensemble
                 </div>
-                {(["trend", "ml", "pomdp"] as const).map((layer) => {
+                {(["trend", "ml", "pomdp", "convlstm"] as const).map((layer) => {
                   const layerData = result[layer]
                   if (!layerData) return null
                   return (
@@ -527,7 +606,7 @@ export default function ForecastPanel({ token, aoi, timelineJobId, onSpatialFore
                         style={{ backgroundColor: layerData.available ? C.green : C.red }}
                       />
                       <span style={{ color: layerData.available ? C.text1 : C.text2 }}>
-                        {layer === "trend" ? "Tendencia" : layer === "ml" ? "ML (Random Forest)" : "POMDP"}
+                        {layer === "trend" ? "Tendencia" : layer === "ml" ? "ML (Random Forest)" : layer === "pomdp" ? "POMDP" : "ConvLSTM"}
                       </span>
                       {layerData.available && layerData.predictions?.[0] && (
                         <span className="ml-auto font-mono" style={{ color: C.text2 }}>

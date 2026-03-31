@@ -13,7 +13,7 @@ from scipy.ndimage import binary_opening, binary_closing
 from shapely.geometry import shape, mapping
 from pathlib import Path
 
-MIN_AREA_HA = 1.0
+MIN_AREA_HA = 0.25
 MAX_FEATURES = 200
 
 

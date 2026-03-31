@@ -1,7 +1,9 @@
 import json
 import sys
 import os
+import hashlib
 import traceback
+from typing import Optional
 from datetime import datetime, timedelta
 
 # Fix Windows console encoding for Unicode chars (arrows, emojis in logs)
@@ -35,6 +37,10 @@ from .engines.sar_engine import SAREngine
 from .engines.crossval_engine import CrossValEngine
 from .services.firms_service import fetch_hotspots_for_aoi
 from .engines.firms_engine import FIRMSEngine
+from .engines.biomass_engine import BiomassEngine
+from .engines.avocado_engine import AvocadoEngine
+from .engines.spectralgpt_engine import SpectralGPTEngine
+from .engines.drivers_mx_engine import ForestNetMXEngine
 
 
 # ── Per-job logging — persisted to DB so it survives --reload ──
@@ -84,14 +90,86 @@ def update_job_status(job_id: str, status: str, progress: int, current_step: str
         conn.commit()
 
 
-def save_analysis_result(job_id: str, engine_name: str, geojson: dict, stats: dict):
+def save_analysis_result(job_id: str, engine_name: str, geojson: dict, stats: dict,
+                         aoi_hash: str = None, date_start: str = None, date_end: str = None):
+    # Auto-fill from pipeline context if not passed explicitly
+    _hash = aoi_hash or _pipeline_ctx.get("aoi_hash")
+    _ds = date_start or _pipeline_ctx.get("date_start")
+    _de = date_end or _pipeline_ctx.get("date_end")
     with db.get_connection() as conn:
         conn.execute(
-            """INSERT INTO analysis_results (job_id, engine, geojson, stats_json)
-               VALUES (?, ?, ?, ?)""",
-            (job_id, engine_name, json.dumps(geojson), json.dumps(stats)),
+            """INSERT INTO analysis_results (job_id, engine, geojson, stats_json, aoi_hash, date_start, date_end)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, engine_name, json.dumps(geojson), json.dumps(stats),
+             _hash, _ds, _de),
         )
         conn.commit()
+
+
+# Pipeline context — set at start of each pipeline run, auto-read by save_analysis_result
+_pipeline_ctx: dict = {}
+
+
+def compute_aoi_hash(aoi: dict) -> str:
+    """Compute MD5 hash of AOI coordinates for cache matching."""
+    coords = aoi.get("coordinates", [[]])
+    return hashlib.md5(json.dumps(coords, sort_keys=True).encode()).hexdigest()
+
+
+def get_cached_result(aoi_hash: str, engine_name: str,
+                      date_start: str, date_end: str,
+                      max_age_hours: int = 24) -> Optional[dict]:
+    """Look up a cached analysis result by AOI hash + engine + dates.
+    Returns {'geojson': ..., 'stats': ...} or None."""
+    try:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                """SELECT geojson, stats_json, created_at FROM analysis_results
+                   WHERE aoi_hash = ? AND engine = ? AND date_start = ? AND date_end = ?
+                   AND created_at > datetime('now', ?)
+                   ORDER BY id DESC LIMIT 1""",
+                (aoi_hash, engine_name, date_start, date_end,
+                 f'-{max_age_hours} hours'),
+            ).fetchone()
+            if row:
+                return {
+                    "geojson": json.loads(row["geojson"]),
+                    "stats": json.loads(row["stats_json"]),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def get_timeline_cache_for_engine(aoi_hash: str, engine_name: str,
+                                  target_year: int,
+                                  max_age_hours: int = 72) -> Optional[dict]:
+    """Check if timeline results contain data for a specific engine+year.
+    Timeline stores results as engine='timeline_{year}' with geojson containing
+    a dict like {"timeline": {"year": N, "deforestation": {...}, ...}}.
+    Returns {'geojson': ..., 'stats': ...} or None."""
+    try:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                """SELECT geojson, stats_json FROM analysis_results
+                   WHERE aoi_hash = ? AND engine = ?
+                   AND created_at > datetime('now', ?)
+                   ORDER BY id DESC LIMIT 1""",
+                (aoi_hash, f'timeline_{target_year}',
+                 f'-{max_age_hours} hours'),
+            ).fetchone()
+            if row:
+                data = json.loads(row["geojson"])
+                year_data = data.get("timeline", {})
+                if engine_name in year_data:
+                    eng_data = year_data[engine_name]
+                    return {
+                        "geojson": eng_data.get("geojson", {"type": "FeatureCollection", "features": []}),
+                        "stats": eng_data.get("stats", {}),
+                    }
+    except Exception:
+        pass
+    return None
 
 
 def _log_raster_bounds(jid: str, label: str, raster_path, aoi_bbox: dict, job_id: str = None):
@@ -144,6 +222,7 @@ def _year_ago(date_str: str) -> str:
 
 def run_pipeline(job_id: str, req_data: dict):
     try:
+        _pipeline_start = datetime.now()
         update_job_status(job_id, "running", 5, "Inicializando servicios...")
 
         aoi = req_data["aoi"]
@@ -161,7 +240,53 @@ def run_pipeline(job_id: str, req_data: dict):
         job_log(job_id, f"[{jid}] Pipeline iniciado")
         job_log(job_id, f"[{jid}] AOI bbox: lon=[{bbox['min_lon']:.4f}, {bbox['max_lon']:.4f}] lat=[{bbox['min_lat']:.4f}, {bbox['max_lat']:.4f}]")
         job_log(job_id, f"[{jid}] AOI vértices: {len(coords)}")
-        job_log(job_id, f"[{jid}] Engines: {engines_to_run} | Dates: {date_range}")
+        job_log(job_id, f"[{jid}] Engines ({len(engines_to_run)}): {engines_to_run}")
+        job_log(job_id, f"[{jid}] Dates: {date_range}")
+
+        # Helper: relay GEE progress into job logs
+        def _gee_progress(msg):
+            job_log(job_id, f"[{jid}] {msg}")
+
+        # ── Compute AOI hash for result caching ──
+        _aoi_hash = compute_aoi_hash(aoi)
+        _date_start, _date_end = date_range[0], date_range[1]
+
+        # Set pipeline context so save_analysis_result auto-fills cache keys
+        global _pipeline_ctx
+        _pipeline_ctx = {"aoi_hash": _aoi_hash, "date_start": _date_start, "date_end": _date_end}
+
+        # ── Check for cached results — skip engines that already have results ──
+        cached_engines: dict[str, dict] = {}
+        for eng in list(engines_to_run):
+            cached = get_cached_result(_aoi_hash, eng, _date_start, _date_end)
+            if cached:
+                cached_engines[eng] = cached
+
+        # ── Fallback: check timeline cache for remaining engines ──
+        remaining = [e for e in engines_to_run if e not in cached_engines]
+        if remaining:
+            try:
+                target_year = int(_date_end[:4])
+            except (ValueError, IndexError):
+                target_year = 2023
+            for eng in remaining:
+                tl_cached = get_timeline_cache_for_engine(_aoi_hash, eng, target_year)
+                if tl_cached:
+                    cached_engines[eng] = tl_cached
+                    job_log(job_id, f"[{jid}] Timeline cache hit: {eng} (año {target_year})")
+
+        if cached_engines:
+            job_log(job_id, f"[{jid}] Cache hit para {len(cached_engines)} motores: {list(cached_engines.keys())}")
+            # Save cached results under this new job_id so results endpoint works
+            for eng, cdata in cached_engines.items():
+                save_analysis_result(job_id, eng, cdata["geojson"], cdata["stats"],
+                                     _aoi_hash, _date_start, _date_end)
+            # Remove cached engines from the run list (keep originals for post-processing)
+            engines_to_run = [e for e in engines_to_run if e not in cached_engines]
+            if not engines_to_run:
+                job_log(job_id, f"[{jid}] Todos los motores en cache — completado")
+                update_job_status(job_id, "completed", 100, "Analisis completado (cache)")
+                return
 
         gee = GEEService()
         gee.initialize()
@@ -199,6 +324,10 @@ def run_pipeline(job_id: str, req_data: dict):
         all_sar_features: list = []
         _all_firms_features: list = []  # noqa: F841
         all_firms_rows: list = []
+        all_avocado_features: list = []
+        total_avocado_ha = 0.0
+        all_spectralgpt_features: list = []
+        spectralgpt_class_totals: dict = {}
         total_def_ha = 0.0
         total_ue_ha = 0.0
         total_hansen_ha = 0.0
@@ -231,11 +360,14 @@ def run_pipeline(job_id: str, req_data: dict):
                 # ── S2 Composite ──
                 step_label = f"{g_label} Descargando Sentinel-2..." if g_label else "Descargando Sentinel-2..."
                 update_job_status(job_id, "running", base_pct, step_label)
-                job_log(job_id, f"[{g_jid}] Descargando S2 composite...")
+                job_log(job_id, f"[{g_jid}] Descargando S2 composite ({date_range[0]} -> {date_range[1]})...")
                 raster_path = gee.get_sentinel2_composite(
                     group_aoi, date_range[0], date_range[1],
-                    job_id=f"{g_job_id}_s2"
+                    job_id=f"{g_job_id}_s2",
+                    on_progress=_gee_progress,
                 )
+                _s2_elapsed = (datetime.now() - _g_start).total_seconds()
+                job_log(job_id, f"[{g_jid}] S2 composite listo en {_s2_elapsed:.1f}s")
                 _log_raster_bounds(g_jid, "S2", raster_path, g_bbox, job_id)
 
                 # ── DW T1/T2 ──
@@ -252,63 +384,93 @@ def run_pipeline(job_id: str, req_data: dict):
                     step_label = f"{g_label} Descargando DW T1..." if g_label else "Descargando Dynamic World T1..."
                     update_job_status(job_id, "running", base_pct + 5, step_label)
                     job_log(job_id, f"[{g_jid}] DW T1: {t1_start} → {t1_end}")
+                    _dw_t1_start = datetime.now()
                     dw_t1_path = gee.get_dynamic_world_classification(
                         group_aoi, t1_start, t1_end,
-                        job_id=f"{g_job_id}_dw_t1"
+                        job_id=f"{g_job_id}_dw_t1",
+                        on_progress=_gee_progress,
                     )
+                    job_log(job_id, f"[{g_jid}] DW T1 listo en {(datetime.now()-_dw_t1_start).total_seconds():.1f}s")
                     _log_raster_bounds(g_jid, "DW-T1", dw_t1_path, g_bbox, job_id)
 
                     step_label = f"{g_label} Descargando DW T2..." if g_label else "Descargando Dynamic World T2..."
                     update_job_status(job_id, "running", base_pct + 10, step_label)
                     job_log(job_id, f"[{g_jid}] DW T2: {date_range[0]} → {date_range[1]}")
+                    _dw_t2_start = datetime.now()
                     dw_t2_path = gee.get_dynamic_world_classification(
                         group_aoi, date_range[0], date_range[1],
-                        job_id=f"{g_job_id}_dw_t2"
+                        job_id=f"{g_job_id}_dw_t2",
+                        on_progress=_gee_progress,
                     )
+                    job_log(job_id, f"[{g_jid}] DW T2 listo en {(datetime.now()-_dw_t2_start).total_seconds():.1f}s")
                     _log_raster_bounds(g_jid, "DW-T2", dw_t2_path, g_bbox, job_id)
 
                 # ── Engines ──
                 if "deforestation" in engines_to_run and dw_t1_path and dw_t2_path:
                     step_label = f"{g_label} Deforestación..." if g_label else "Ejecutando Deforestación..."
                     update_job_status(job_id, "running", base_pct + 15, step_label)
+                    _eng_t = datetime.now()
                     dw_engine = DynamicWorldEngine()
                     geo, stats = dw_engine.detect_deforestation(dw_t1_path, dw_t2_path)
                     all_def_features.extend(geo.get("features", []))
                     total_def_ha += stats.get("area_ha", 0)
-                    job_log(job_id, f"[{g_jid}] ✓ Deforestación: {len(geo.get('features',[]))} feat, {stats.get('area_ha',0):.1f} ha")
+                    job_log(job_id, f"[{g_jid}] ✓ Deforestación: {len(geo.get('features',[]))} feat, {stats.get('area_ha',0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
 
                 if "urban_expansion" in engines_to_run and dw_t1_path and dw_t2_path:
                     step_label = f"{g_label} Expansión urbana..." if g_label else "Ejecutando Expansión urbana..."
                     update_job_status(job_id, "running", base_pct + 18, step_label)
+                    _eng_t = datetime.now()
                     dw_engine = DynamicWorldEngine()
                     geo, stats = dw_engine.detect_urban_expansion(dw_t1_path, dw_t2_path)
                     all_ue_features.extend(geo.get("features", []))
                     total_ue_ha += stats.get("area_ha", 0)
-                    job_log(job_id, f"[{g_jid}] ✓ Expansión urbana: {len(geo.get('features',[]))} feat, {stats.get('area_ha',0):.1f} ha")
+                    job_log(job_id, f"[{g_jid}] ✓ Expansión urbana: {len(geo.get('features',[]))} feat, {stats.get('area_ha',0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
 
                 if "vegetation" in engines_to_run and dw_t2_path:
                     step_label = f"{g_label} Vegetación..." if g_label else "Ejecutando Vegetación..."
                     update_job_status(job_id, "running", base_pct + 20, step_label)
+                    _eng_t = datetime.now()
                     dw_engine = DynamicWorldEngine()
                     geo, stats = dw_engine.classify_from_raster(dw_t2_path)
                     all_veg_features.extend(geo.get("features", []))
                     for cls, pct in stats.get("classes", {}).items():
                         veg_class_totals[cls] = veg_class_totals.get(cls, 0) + pct
-                    job_log(job_id, f"[{g_jid}] ✓ Vegetación: {len(geo.get('features',[]))} feat")
+                    job_log(job_id, f"[{g_jid}] ✓ Vegetación: {len(geo.get('features',[]))} feat ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
 
                 if "structures" in engines_to_run:
                     step_label = f"{g_label} Estructuras..." if g_label else "Ejecutando Estructuras..."
                     update_job_status(job_id, "running", base_pct + 22, step_label)
+                    _eng_t = datetime.now()
                     engine = StructureEngine()
                     geo, stats = engine.predict_from_raster(raster_path, group_aoi)
                     all_str_features.extend(geo.get("features", []))
-                    job_log(job_id, f"[{g_jid}] ✓ Estructuras: {len(geo.get('features',[]))} feat")
+                    job_log(job_id, f"[{g_jid}] ✓ Estructuras: {len(geo.get('features',[]))} feat ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
+
+                # ── SpectralGPT Classification ──
+                if "spectralgpt" in engines_to_run:
+                    step_label = f"{g_label} SpectralGPT clasificación..." if g_label else "SpectralGPT clasificación espectral..."
+                    update_job_status(job_id, "running", base_pct + 24, step_label)
+                    job_log(job_id, f"[{g_jid}] SpectralGPT analizando composite...")
+                    _eng_t = datetime.now()
+                    try:
+                        sgpt_engine = SpectralGPTEngine()
+                        geo, stats = sgpt_engine.classify_composite(
+                            raster_path, job_id=g_job_id,
+                        )
+                        all_spectralgpt_features.extend(geo.get("features", []))
+                        for cls, area in stats.get("classes", {}).items():
+                            spectralgpt_class_totals[cls] = spectralgpt_class_totals.get(cls, 0) + area
+                        sgpt_engine.unload()
+                        job_log(job_id, f"[{g_jid}] ✓ SpectralGPT: {len(geo.get('features',[]))} feat, modo={stats.get('model_mode','?')} ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
+                    except Exception as e:
+                        job_log(job_id, f"[{g_jid}] ⚠ SpectralGPT error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── Hansen Global Forest Change ──
                 if "hansen" in engines_to_run:
                     step_label = f"{g_label} Hansen Forest Loss..." if g_label else "Ejecutando Hansen Forest Loss..."
                     update_job_status(job_id, "running", base_pct + 25, step_label)
                     job_log(job_id, f"[{g_jid}] Descargando Hansen GFC...")
+                    _eng_t = datetime.now()
                     try:
                         hansen_svc = GEEHansenService()
                         hansen_svc.initialize()
@@ -319,15 +481,16 @@ def run_pipeline(job_id: str, req_data: dict):
                         geo, stats = hansen_engine.analyze_historical_loss(hansen_path)
                         all_hansen_features.extend(geo.get("features", []))
                         total_hansen_ha += stats.get("total_loss_ha", 0)
-                        job_log(job_id, f"[{g_jid}] ✓ Hansen: {len(geo.get('features',[]))} feat, {stats.get('total_loss_ha',0):.1f} ha")
+                        job_log(job_id, f"[{g_jid}] ✓ Hansen: {len(geo.get('features',[]))} feat, {stats.get('total_loss_ha',0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ Hansen error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ Hansen error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── Alerts GLAD/RADD ──
                 if "alerts" in engines_to_run:
                     step_label = f"{g_label} Alertas GLAD/RADD..." if g_label else "Ejecutando Alertas GLAD/RADD..."
                     update_job_status(job_id, "running", base_pct + 28, step_label)
                     job_log(job_id, f"[{g_jid}] Descargando alertas GLAD/RADD...")
+                    _eng_t = datetime.now()
                     try:
                         alerts_svc = GEEAlertsService()
                         alerts_svc.initialize()
@@ -362,15 +525,16 @@ def run_pipeline(job_id: str, req_data: dict):
                         )
                         all_alert_features.extend(merged_geo.get("features", []))
                         total_alert_ha += merged_stats.get("total_area_ha", 0)
-                        job_log(job_id, f"[{g_jid}] ✓ Alertas merged: {merged_stats.get('total_alerts', 0)}")
+                        job_log(job_id, f"[{g_jid}] ✓ Alertas merged: {merged_stats.get('total_alerts', 0)} ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ Alerts error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ Alerts error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── WRI Drivers of Forest Loss ──
                 if "drivers" in engines_to_run:
                     step_label = f"{g_label} Drivers WRI..." if g_label else "Ejecutando Drivers WRI..."
                     update_job_status(job_id, "running", base_pct + 32, step_label)
                     job_log(job_id, f"[{g_jid}] Descargando WRI Drivers...")
+                    _eng_t = datetime.now()
                     try:
                         drivers_svc = GEEDriversService()
                         drivers_svc.initialize()
@@ -380,15 +544,16 @@ def run_pipeline(job_id: str, req_data: dict):
                         drivers_engine = DriversEngine()
                         geo, stats = drivers_engine.classify_drivers(drivers_path)
                         all_driver_features.extend(geo.get("features", []))
-                        job_log(job_id, f"[{g_jid}] ✓ Drivers: {len(geo.get('features',[]))} feat")
+                        job_log(job_id, f"[{g_jid}] ✓ Drivers: {len(geo.get('features',[]))} feat ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ Drivers error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ Drivers error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── MODIS Fire / Burned Area ──
                 if "fire" in engines_to_run:
                     step_label = f"{g_label} Incendios MODIS..." if g_label else "Ejecutando Incendios MODIS..."
                     update_job_status(job_id, "running", base_pct + 35, step_label)
                     job_log(job_id, f"[{g_jid}] Descargando MODIS burned area...")
+                    _eng_t = datetime.now()
                     try:
                         fire_svc = GEEAlertsService()
                         fire_svc.initialize()
@@ -400,15 +565,16 @@ def run_pipeline(job_id: str, req_data: dict):
                         geo, stats = fire_engine.detect_burned_areas(fire_path)
                         all_fire_features.extend(geo.get("features", []))
                         total_burned_ha += stats.get("total_burned_ha", 0)
-                        job_log(job_id, f"[{g_jid}] ✓ Incendios: {len(geo.get('features',[]))} feat, {stats.get('total_burned_ha',0):.1f} ha")
+                        job_log(job_id, f"[{g_jid}] ✓ Incendios: {len(geo.get('features',[]))} feat, {stats.get('total_burned_ha',0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ Fire error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ Fire error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── Sentinel-1 SAR Change Detection ──
                 if "sar" in engines_to_run:
                     step_label = f"{g_label} SAR Sentinel-1..." if g_label else "Ejecutando SAR Sentinel-1..."
                     update_job_status(job_id, "running", base_pct + 38, step_label)
                     job_log(job_id, f"[{g_jid}] Descargando composites SAR...")
+                    _eng_t = datetime.now()
                     try:
                         sar_svc = GEESARService()
                         sar_svc.initialize()
@@ -433,24 +599,44 @@ def run_pipeline(job_id: str, req_data: dict):
                         geo, stats = sar_engine.detect_change_sar(sar_t1_path, sar_t2_path)
                         all_sar_features.extend(geo.get("features", []))
                         total_sar_ha += stats.get("total_change_ha", 0)
-                        job_log(job_id, f"[{g_jid}] ✓ SAR: {len(geo.get('features',[]))} cambios, {stats.get('total_area_ha',0):.1f} ha")
+                        job_log(job_id, f"[{g_jid}] ✓ SAR: {len(geo.get('features',[]))} cambios, {stats.get('total_area_ha',0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ SAR error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ SAR error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
                 # ── NASA FIRMS NRT Active Fire Hotspots ──
                 if "firms_hotspots" in engines_to_run:
                     step_label = f"{g_label} FIRMS hotspots NRT..." if g_label else "Consultando FIRMS hotspots NRT..."
                     update_job_status(job_id, "running", base_pct + 42, step_label)
                     job_log(job_id, f"[{g_jid}] Consultando NASA FIRMS NRT...")
+                    _eng_t = datetime.now()
                     try:
                         rows = fetch_hotspots_for_aoi(
                             group_aoi, date_range[0], date_range[1]
                         )
                         all_firms_rows.extend(rows)
-                        job_log(job_id, f"[{g_jid}] ✓ FIRMS: {len(rows)} hotspots en AOI")
+                        job_log(job_id, f"[{g_jid}] ✓ FIRMS: {len(rows)} hotspots en AOI ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
                     except Exception as e:
-                        job_log(job_id, f"[{g_jid}] ⚠ FIRMS error: {str(e)[:150]}")
+                        job_log(job_id, f"[{g_jid}] ⚠ FIRMS error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
 
+                # ── AVOCADO Anomaly Detection ──
+                if "avocado" in engines_to_run:
+                    step_label = f"{g_label} AVOCADO anomalías..." if g_label else "Detectando anomalías AVOCADO..."
+                    update_job_status(job_id, "running", base_pct + 45, step_label)
+                    job_log(job_id, f"[{g_jid}] Ejecutando AVOCADO (NDVI percentil)...")
+                    _eng_t = datetime.now()
+                    try:
+                        avocado_eng = AvocadoEngine()
+                        avocado_geo, avocado_stats = avocado_eng.run(
+                            aoi_geojson=group_aoi,
+                            end_date=date_range[1],
+                            job_id=g_job_id,
+                            on_progress=_gee_progress,
+                        )
+                        all_avocado_features.extend(avocado_geo.get("features", []))
+                        total_avocado_ha += avocado_stats.get("total_area_ha", 0)
+                        job_log(job_id, f"[{g_jid}] ✓ AVOCADO: {avocado_stats.get('n_anomalies', 0)} anomalías, {avocado_stats.get('total_area_ha', 0):.1f} ha ({(datetime.now()-_eng_t).total_seconds():.1f}s)")
+                    except Exception as e:
+                        job_log(job_id, f"[{g_jid}] ⚠ AVOCADO error ({(datetime.now()-_eng_t).total_seconds():.1f}s): {str(e)[:150]}")
                 _g_elapsed = (datetime.now() - _g_start).total_seconds()
                 job_log(job_id, f"[{g_jid}] Grupo completado en {_g_elapsed:.1f}s")
                 groups_ok += 1
@@ -486,6 +672,14 @@ def run_pipeline(job_id: str, req_data: dict):
             save_analysis_result(job_id, "structures",
                 {"type": "FeatureCollection", "features": all_str_features},
                 {"count": len(all_str_features), "n_features": len(all_str_features), "n_groups": n_groups})
+
+        if "spectralgpt" in engines_to_run:
+            save_analysis_result(job_id, "spectralgpt",
+                {"type": "FeatureCollection", "features": all_spectralgpt_features},
+                {"classes": {k: round(v, 2) for k, v in spectralgpt_class_totals.items()},
+                 "n_features": len(all_spectralgpt_features),
+                 "n_groups": n_groups,
+                 "source": "SpectralGPT"})
 
         if "hansen" in engines_to_run:
             hansen_loss_by_year = {}
@@ -626,6 +820,71 @@ def run_pipeline(job_id: str, req_data: dict):
             except Exception as e:
                 job_log(job_id, f"[{jid}] ⚠ FIRMS post-processing error: {str(e)[:150]}")
 
+        # ── AVOCADO anomaly results ──
+        if "avocado" in engines_to_run:
+            by_sev: dict = {}
+            for f in all_avocado_features:
+                sev = f.get("properties", {}).get("severity", "media")
+                by_sev[sev] = by_sev.get(sev, 0) + 1
+            save_analysis_result(job_id, "avocado",
+                {"type": "FeatureCollection", "features": all_avocado_features},
+                {"n_anomalies": len(all_avocado_features),
+                 "total_area_ha": round(total_avocado_ha, 2),
+                 "by_severity": by_sev,
+                 "n_groups": n_groups,
+                 "source": "AVOCADO (S2 NDVI percentile)"})
+            job_log(job_id, f"[{jid}] \u2713 AVOCADO guardado: {len(all_avocado_features)} anomalías")
+
+        # ── Post-processing: GEDI Biomass + CO₂ estimation ──
+        biomass_stats = {}
+        if "deforestation" in engines_to_run and all_def_features:
+            try:
+                job_log(job_id, f"[{jid}] Estimando biomasa y CO\u2082 (GEDI L4B)...")
+                update_job_status(job_id, "running", 92, "Estimando biomasa y CO\u2082...")
+                biomass_eng = BiomassEngine()
+                all_def_features, biomass_stats = biomass_eng.enrich_deforestation(
+                    all_def_features, job_id=job_id
+                )
+                if biomass_stats.get("total_co2_tonnes", 0) > 0:
+                    save_analysis_result(job_id, "biomass", {}, biomass_stats)
+                    job_log(job_id,
+                        f"[{jid}] \u2713 Biomasa: {biomass_stats['biomass_enriched']} poligonos, "
+                        f"{biomass_stats['total_co2_tonnes']:.1f} tCO\u2082")
+                else:
+                    job_log(job_id, f"[{jid}] \u26a0 GEDI sin cobertura en AOI")
+            except Exception as e:
+                job_log(job_id, f"[{jid}] \u26a0 Biomass error: {str(e)[:150]}")
+
+        # ── Post-processing: ForestNet-MX driver classification ──
+        if "deforestation" in engines_to_run and all_def_features:
+            try:
+                job_log(job_id, f"[{jid}] Clasificando drivers (ForestNet-MX)...")
+                update_job_status(job_id, "running", 93, "Clasificando drivers ForestNet-MX...")
+                fnet_engine = ForestNetMXEngine()
+                _engine_outputs = {}
+                if all_fire_features:
+                    _engine_outputs["fire"] = {"geojson": {"type": "FeatureCollection", "features": all_fire_features}}
+                if all_ue_features:
+                    _engine_outputs["urban_expansion"] = {"geojson": {"type": "FeatureCollection", "features": all_ue_features}}
+                if all_avocado_features:
+                    _engine_outputs["avocado"] = {"geojson": {"type": "FeatureCollection", "features": all_avocado_features}}
+                if all_firms_rows:
+                    _engine_outputs["firms_hotspots"] = {"geojson": {"type": "FeatureCollection", "features": all_firms_rows}}
+                if all_str_features:
+                    _engine_outputs["structures"] = {"geojson": {"type": "FeatureCollection", "features": all_str_features}}
+                all_def_features, fnet_stats = fnet_engine.classify(
+                    all_def_features, _engine_outputs, job_id=job_id
+                )
+                if fnet_stats.get("n_classified", 0) > 0:
+                    save_analysis_result(job_id, "drivers_mx", {}, fnet_stats)
+                    job_log(job_id,
+                        f"[{jid}] \u2713 ForestNet-MX: {fnet_stats['n_classified']} clasificados, "
+                        f"dominante={fnet_stats.get('dominant_label','?')}")
+                else:
+                    job_log(job_id, f"[{jid}] \u26a0 ForestNet-MX: sin pol\u00edgonos para clasificar")
+            except Exception as e:
+                job_log(job_id, f"[{jid}] \u26a0 ForestNet-MX error: {str(e)[:150]}")
+
         # ── Post-processing: MapBiomas cross-validation ──
         if "deforestation" in engines_to_run and all_def_features:
             try:
@@ -669,8 +928,18 @@ def run_pipeline(job_id: str, req_data: dict):
             except Exception as e:
                 job_log(job_id, f"[{jid}] ⚠ Legal context error: {str(e)[:150]}")
 
-        summary = (f"{n_groups} grupo(s), {groups_ok} exitoso(s)"
-                   if n_groups > 1 else "Analisis completado exitosamente!")
+        # ── Re-save deforestation with ALL enrichments (biomass, ForestNet-MX, ANP) ──
+        if "deforestation" in engines_to_run and all_def_features:
+            enriched_stats = {
+                "area_ha": round(total_def_ha, 1),
+                "n_features": len(all_def_features),
+                "n_groups": n_groups,
+            }
+            if biomass_stats:
+                enriched_stats["biomass"] = biomass_stats
+            save_analysis_result(job_id, "deforestation",
+                {"type": "FeatureCollection", "features": all_def_features},
+                enriched_stats)
 
         # ── Final summary logging ──
         results_summary = []
@@ -692,8 +961,15 @@ def run_pipeline(job_id: str, req_data: dict):
             results_summary.append(f"firms_nrt={len(all_firms_rows)}hotspots")
         if all_driver_features:
             results_summary.append(f"drivers={len(all_driver_features)}feat")
+        if biomass_stats.get("total_co2_tonnes", 0) > 0:
+            results_summary.append(f"co2={biomass_stats['total_co2_tonnes']:.1f}t")
         if results_summary:
             job_log(job_id, f"[{jid}] Resultados: {', '.join(results_summary)}")
+
+        _total_elapsed = (datetime.now() - _pipeline_start).total_seconds()
+        summary = (f"{n_groups} grupo(s), {groups_ok} exitoso(s), {_total_elapsed:.0f}s total"
+                   if n_groups > 1
+                   else f"Completado en {_total_elapsed:.0f}s")
 
         job_log(job_id, f"[{jid}] Pipeline completado -- {summary}")
         update_job_status(job_id, "completed", 100, summary)
@@ -789,6 +1065,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
     seleccionados. Guarda resultados por año con engine='timeline_{year}'.
     """
     try:
+        _tl_start = datetime.now()
         update_job_status(job_id, "running", 5, "Inicializando timeline...")
 
         aoi = req_data["aoi"]
@@ -799,7 +1076,16 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
 
         jid = job_id[:8]
         job_log(job_id, f"[{jid}] Timeline iniciado: {start_year}→{end_year}, season={season}")
-        job_log(job_id, f"[{jid}] Engines: {engines}")
+        job_log(job_id, f"[{jid}] Engines ({len(engines)}): {engines}")
+
+        # Helper: relay GEE progress into job logs
+        def _gee_progress(msg):
+            job_log(job_id, f"[{jid}] {msg}")
+
+        # Set pipeline context for cache auto-fill
+        global _pipeline_ctx
+        _aoi_hash = compute_aoi_hash(aoi)
+        _pipeline_ctx = {"aoi_hash": _aoi_hash, "date_start": str(start_year), "date_end": str(end_year)}
 
         SEASONS = {
             "dry": ("01-01", "03-31"),
@@ -834,6 +1120,7 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                         f"{year}-{s_start}",
                         f"{year}-{s_end}",
                         job_id=f"{job_id}_dw_{year}",
+                        on_progress=_gee_progress,
                     )
                     rasters_dw[year] = path
                     job_log(job_id, f"[{jid}] DW {year} descargado")
@@ -924,8 +1211,22 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
                         geo_def, stats_def = dw_engine.detect_deforestation(
                             rasters_dw[t1_year], rasters_dw[year]
                         )
+                        # Enrich with GEDI biomass / CO₂
+                        def_feats = geo_def.get("features", [])
+                        if def_feats:
+                            try:
+                                biomass_eng = BiomassEngine()
+                                def_feats, bm_stats = biomass_eng.enrich_deforestation(
+                                    def_feats, job_id=f"{job_id}_bm_{year}"
+                                )
+                                geo_def["features"] = def_feats
+                                stats_def["co2_tonnes"] = bm_stats.get("total_co2_tonnes", 0)
+                                stats_def["carbon_tonnes"] = bm_stats.get("total_carbon_tonnes", 0)
+                                stats_def["mean_agbd_mg_ha"] = bm_stats.get("mean_agbd_mg_ha", 0)
+                            except Exception as e_bm:
+                                job_log(job_id, f"[{jid}] {year} ⚠ Biomass: {e_bm}")
                         year_result["deforestation"] = {"geojson": geo_def, "stats": stats_def}
-                        job_log(job_id, f"[{jid}] {year} Deforestación: {stats_def.get('area_ha', 0):.1f} ha")
+                        job_log(job_id, f"[{jid}] {year} Deforestación: {stats_def.get('area_ha', 0):.1f} ha, {stats_def.get('co2_tonnes', 0):.1f} tCO₂")
                     except Exception as e:
                         job_log(job_id, f"[{jid}] {year} ⚠ Deforest error: {e}")
 
@@ -1111,6 +1412,14 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             v.get("alerts", {}).get("stats", {}).get("total_alerts", 0)
             for v in timeline_results.values()
         )
+        total_co2_tonnes = round(sum(
+            v.get("deforestation", {}).get("stats", {}).get("co2_tonnes", 0)
+            for v in timeline_results.values()
+        ), 2)
+        total_carbon_tonnes = round(sum(
+            v.get("deforestation", {}).get("stats", {}).get("carbon_tonnes", 0)
+            for v in timeline_results.values()
+        ), 2)
 
         first_yr_key = str(all_years_sorted[1]) if len(all_years_sorted) > 1 else str(all_years_sorted[0])
         last_yr_key = str(all_years_sorted[-1])
@@ -1128,6 +1437,8 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             "total_hansen_loss_ha": round(total_hansen_ha_timeline, 1),
             "total_sar_change_ha": round(total_sar_ha, 1),
             "total_alerts": total_alerts_count,
+            "total_co2_tonnes": total_co2_tonnes,
+            "total_carbon_tonnes": total_carbon_tonnes,
             "bosque_denso_change_pct": round(
                 last_year_veg.get("bosque_denso", 0) - first_year_veg.get("bosque_denso", 0), 1
             ),
@@ -1148,9 +1459,10 @@ def run_timeline_pipeline(job_id: str, req_data: dict):
             "cumulative": cumulative,
         }
         save_analysis_result(job_id, "timeline_summary", summary, {})
-        job_log(job_id, f"[{jid}] ✅ Timeline completado: {len(timeline_results)} años, engines={engines}")
+        _tl_elapsed = (datetime.now() - _tl_start).total_seconds()
+        job_log(job_id, f"[{jid}] Timeline completado: {len(timeline_results)} anos, engines={engines}, {_tl_elapsed:.0f}s total")
         update_job_status(job_id, "completed", 100,
-                          f"Timeline completado: {len(timeline_results)} años con {len(engines)} motores")
+                          f"Timeline completado: {len(timeline_results)} anos × {len(engines)} motores en {_tl_elapsed:.0f}s")
 
         # ── Auto-send email report if notify_email was provided ──
         _send_completion_email(job_id, "timeline")

@@ -33,14 +33,14 @@ def _get_engine():
 class ForecastRunRequest(BaseModel):
     job_id: Optional[str] = Field(None, description="Timeline job ID (auto-detects latest if omitted)")
     horizon: int = Field(3, ge=1, le=5, description="Years ahead (1-5)")
-    method: str = Field("ensemble", description="trend | ml | pomdp | ensemble")
+    method: str = Field("ensemble", description="trend | ml | pomdp | convlstm | ensemble")
 
 
 class ForecastAOIRequest(BaseModel):
     aoi: Optional[dict] = Field(None, description="GeoJSON geometry (ignored in v2)")
     job_id: Optional[str] = Field(None, description="Timeline job ID")
     horizon: int = Field(3, ge=1, le=5, description="Years ahead (1-5)")
-    method: str = Field("ensemble", description="trend | ml | pomdp | ensemble")
+    method: str = Field("ensemble", description="trend | ml | pomdp | convlstm | ensemble")
 
 
 # ── Endpoints ──
@@ -88,6 +88,21 @@ async def train_model():
     except Exception as exc:
         logger.error("train_model failed: %s", exc, exc_info=True)
         raise HTTPException(500, f"Training error: {exc}")
+
+
+@router.post("/forecast/train-convlstm")
+async def train_convlstm():
+    """Train or retrain the ConvLSTM spatiotemporal model on timeline data."""
+    engine = _get_engine()
+    if engine is None:
+        raise HTTPException(503, "Forecast engine not available")
+
+    try:
+        result = engine.train_convlstm_model()
+        return result
+    except Exception as exc:
+        logger.error("train_convlstm failed: %s", exc, exc_info=True)
+        raise HTTPException(500, f"ConvLSTM training error: {exc}")
 
 
 @router.get("/forecast/status")
